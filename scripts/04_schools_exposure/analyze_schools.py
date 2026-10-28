@@ -7,8 +7,8 @@ Runs 500m buffer extractions and generates publication-grade figures:
 
 Usage:
 ------
-python analyze_schools.py
-python analyze_schools.py --buffer 500 --figures-dir output/figures/schools
+python scripts/04_schools_exposure/analyze_schools.py
+python scripts/04_schools_exposure/analyze_schools.py --buffer 500 --figures-dir output/figures/schools
 """
 
 import sys

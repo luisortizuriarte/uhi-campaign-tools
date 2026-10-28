@@ -9,8 +9,8 @@ Combines school locations from Alexandria, Arlington, and Fairfax counties:
 
 Usage:
 ------
-python process_schools.py
-python process_schools.py --output output/locations/school_locs.gpkg
+python scripts/04_schools_exposure/process_schools.py
+python scripts/04_schools_exposure/process_schools.py --output output/locations/school_locs.gpkg
 """
 
 import sys
