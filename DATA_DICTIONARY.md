@@ -108,3 +108,4 @@ Packed single contiguous array storing 12 consecutive attributes per cell across
 - Dimensions: $523 \times 479$ pixels ($250,517$ values).
 - Data Type: `Int32Array` (Little Endian).
 - Value: Linear index into the $362 \times 399$ grid, or `-1` if the pixel falls outside the grid boundary.
+
