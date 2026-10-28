@@ -1,0 +1,19 @@
+name: uhidata
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python>=3.11
+  - numpy>=2.0
+  - matplotlib>=3.9
+  - rasterio>=1.4
+  - xarray>=2024.0
+  - rioxarray>=0.17
+  - contextily>=1.6
+  - pyproj>=3.7
+  - geopandas>=1.0
+  - scipy>=1.14
+  - xyzservices>=2024.0
+  - libpysal
+  - esda
+

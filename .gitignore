@@ -1,0 +1,73 @@
+# =============================================================================
+# NOVA Urban Heat Island Pipeline .gitignore
+# =============================================================================
+
+# 1. Independent Web Dashboard Repository (Tracked separately in web_dashboard/)
+web_dashboard/
+
+# 2. Large Binary Rasters & Masks (>50 MB, exceeds GitHub limits)
+*.tif
+*.tiff
+*.aux.xml
+*.tif.aux.xml
+input_data/maps/
+output/canopy/*.tif
+
+# 3. Heavy Jurisdictional Input Shapefiles (>2 GB, store externally / download)
+input_data/tree canopy/
+
+# 4. Pipeline Output Data Products & Caches (Reproducible via run_pipeline.py)
+output/canopy/
+output/hotspots/
+output/locations/
+output/figures/
+
+# 5. Large Presentation & Office Files (>20 MB)
+*.pptx
+*.png
+
+# 6. Python Cache, Bytecode & Packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 7. Testing, Coverage & Environments
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+env/
+venv/
+
+# 8. Operating System & Editor Artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 9. Temporary & Scratch Files
+*.tmp
+*.log
+scratch/
+.system_generated/
+school_locs.gpkg
