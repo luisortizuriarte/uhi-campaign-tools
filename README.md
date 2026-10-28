@@ -1,160 +1,106 @@
-# Northern Virginia (NOVA) Urban Heat Island Scientific Analysis Pipeline
+# Northern Virginia (NOVA) Urban Heat Island Analysis Tools
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
-[![Conda Environment](https://img.shields.io/badge/Environment-Conda%20Forge-green.svg)](environment.yml)
-[![Pytest Test Suite](https://img.shields.io/badge/Tests-Pytest-orange.svg)](tests/)
-
-This repository contains the scientific data processing pipeline for the **Northern Virginia (NOVA) Urban Heat Island (UHI) Mapping Campaign**. It processes field measurements, jurisdictional tree canopy polygons, and machine-learning continuous temperature surfaces across **Fairfax County**, **Arlington County**, and the **City of Alexandria**.
-
-For technical architecture and data flow, see [PIPELINE_ARCHITECTURE.md](PIPELINE_ARCHITECTURE.md).  
-For complete attribute definitions and CRS specifications, see [DATA_DICTIONARY.md](DATA_DICTIONARY.md).  
-For the interactive public explorer, see the sister repository in [`web_dashboard/`](web_dashboard/README.md).
+Scientific data processing and spatial analysis toolkit for the Northern Virginia Urban Heat Island (UHI) Mapping Campaign. This toolkit processes high-resolution mobile traverse observations, continuous modeled temperature surfaces, and jurisdictional tree canopy polygons across Fairfax County, Arlington County, and the City of Alexandria.
 
 ---
 
-## Key Capabilities
+## Environment Requirements
 
-1. **Streaming C++ Tree Canopy Aggregation**: Scalable rasterization (`gdal_rasterize`) of 3.5+ million jurisdictional tree canopy polygons into a unified 1m mask, followed by block-strided window aggregation across 144,438 nominal 100m grid cells. Mean absolute error vs. exact Shapely intersection: **0.05 percentage points**.
-2. **Diurnal Microclimate Zonal Statistics**: Computes mean temperatures and domain spatial anomalies for Morning (AM: 6–7 AM), Afternoon (AF: 3–4 PM), and Evening (PM: 7–8 PM) mobile survey observation periods.
-3. **Spatial Clustering & Hotspot Persistence**: Computes Getis-Ord $G_i^*$ local statistics, z-score clustering at 90%, 95%, and 99% confidence intervals, and classifies diurnal persistence (persistent hot, persistent cold, variable).
-4. **Community Vulnerability Modeling**: Computes tree canopy buffers and heat exposure percentile ranks for public schools and public facilities.
-5. **16:9 Presentation Cartography**: Generates publication-ready 300 DPI graphics ($4000 \times 2250$ px) adhering to Tufte de-cluttering standards and the Figtree visual guidelines in `GEMINI.md`.
-6. **Web Dashboard Serialization**: Extracts and packs the 144,438 analytical cells into sub-5 millisecond binary typed arrays for the standalone client-side web application.
+- **Python**: `>= 3.11`
+- **Key Dependencies**:
+  - Spatial & Raster Processing: `geopandas`, `rasterio`, `xarray`, `rioxarray`, `pyproj`, `shapely`, `pyogrio`
+  - Scientific Computing & Statistics: `numpy`, `scipy`, `pandas`, `libpysal`, `esda`
+  - Visualization: `matplotlib`, `contextily`
 
----
+### Setup Instructions
 
-## Directory Organization
+1. **Create and Activate Environment** (via Conda/Mamba using `environment.yml`):
+   ```bash
+   conda env create -f environment.yml
+   conda activate uhidata
+   ```
 
-```
-uhi-campaign-tools /
-├── run_pipeline.py                 # Master CLI runner to execute all or individual stages
-├── pyproject.toml                  # Python package configuration (pip install -e .)
-├── environment.yml                 # Conda environment definition (conda-forge)
-├── README.md                       # Project documentation (this file)
-├── PIPELINE_ARCHITECTURE.md        # Technical pipeline architecture & dataflow
-├── DATA_DICTIONARY.md              # Input/output schemas, CRS, and attribute definitions
-├── GEMINI.md                       # 16:9 presentation figure styling standards
-│
-├── uhi/                            # Core Scientific Python Library
-│   ├── __init__.py                 # Library exports
-│   ├── canopy.py                   # GDAL rasterization & block aggregation
-│   ├── zonal.py                    # Zonal statistics & spatial anomalies
-│   ├── hotspots.py                 # Spatial autocorrelation (Getis-Ord Gi*, z-scores)
-│   ├── school_analysis.py          # School heat exposure & canopy buffers
-│   ├── plotting.py                 # 16:9 presentation maps & styling
-│   ├── canopy_plots.py             # Canopy quintile comparison graphics
-│   ├── hotspot_plots.py            # Significance & cluster plotting utilities
-│   ├── locations.py                # Coordinate transforms & feature processing
-│   ├── io.py                       # GeoPackage & raster I/O
-│   └── style_template.py           # Presentation figure standards & color palettes
-│
-├── scripts/                        # Numbered Pipeline Execution Stages
-│   ├── 01_canopy/                  # Tree canopy rasterization & validation
-│   │   ├── make_canopy_grid.py
-│   │   ├── validate_canopy.py
-│   │   └── make_canopy_map.py
-│   ├── 02_temperature/             # Zonal temperature & anomaly mapping
-│   │   ├── add_temperature_to_grid.py
-│   │   ├── make_uhi_maps.py
-│   │   └── generate_measurement_maps.py
-│   ├── 03_hotspots/                # Spatial autocorrelation & persistence
-│   │   ├── make_hotspot_analysis.py
-│   │   └── generate_significance_maps.py
-│   ├── 04_schools_exposure/        # Facility exposure & vulnerability
-│   │   ├── process_schools.py
-│   │   └── analyze_schools.py
-│   ├── 05_presentation_graphics/   # Slide cartography & quintile options
-│   │   ├── export_transparent_maps.py
-│   │   ├── create_quintile_options.py
-│   │   └── make_analysis_plots.py
-│   └── 06_dashboard_export/        # Web dashboard binary export
-│       └── build_dashboard_data.py
-│
-├── tests/                          # Automated Pytest Suite
-│   ├── test_analysis.py
-│   ├── test_canopy.py
-│   ├── test_canopy_plots.py
-│   ├── test_hotspots.py
-│   ├── test_locations.py
-│   ├── test_school_analysis.py
-│   ├── test_style_template.py
-│   ├── test_uhi.py
-│   └── test_zonal.py
-│
-├── input_data/                     # Raw Input Datasets (Read-Only)
-│   ├── auxilliary/                 # 100m nominal study grid
-│   ├── county_boundaries/          # Jurisdictional boundary shapefiles
-│   ├── locations/                  # School & landmark coordinates
-│   ├── maps/                       # Continuous temperature surface GeoTIFFs
-│   ├── tree canopy/                # Jurisdictional canopy shapefiles
-│   └── uhi-combined/               # Mobile traverse GPS sensor readings
-│
-├── output/                         # Generated Pipeline Data Products
-│   ├── canopy/                     # grid-canopy.gpkg (144,438 grid features)
-│   ├── hotspots/                   # hotspots.gpkg (Master analytical grid)
-│   ├── locations/                  # school_heat_exposure.csv
-│   └── figures/                    # 300 DPI 16:9 presentation figures
-│
-└── web_dashboard/                  # Independent Web Dashboard Repository
-    └── (See web_dashboard/README.md for standalone web app documentation)
-```
+2. **Install the `uhi` Library in Editable Mode**:
+   ```bash
+   pip install -e .
+   ```
+
+3. **Verify Installation** (run automated test suite):
+   ```bash
+   python -m unittest discover tests
+   ```
 
 ---
 
-## Installation & Environment Setup
+## Analysis Tools Overview
 
-### 1. Create Conda Environment
-Using the provided `environment.yml`:
-```bash
-conda env create -f environment.yml
-conda activate uhidata
-```
+The analysis toolkit is structured into a modular Python package (`uhi/`) and numbered execution stages (`scripts/`):
 
-### 2. Install Core Package in Editable Mode
-```bash
-pip install -e .
-```
+### 1. Core Scientific Library (`uhi/`)
+- **`uhi.canopy`**: High-performance rasterization of millions of vector tree canopy polygons and block aggregation into 100m grid cells.
+- **`uhi.zonal`**: Extraction of zonal mean temperatures and domain spatial anomalies for Morning (AM: 6–7 AM), Afternoon (AF: 3–4 PM), and Evening (PM: 7–8 PM) observation periods.
+- **`uhi.hotspots`**: Spatial autocorrelation modeling using Getis-Ord $G_i^*$, local z-score clustering (90%, 95%, 99% confidence levels), and diurnal persistence classification (persistent hot, persistent cold, variable).
+- **`uhi.school_analysis`**: Vulnerability modeling computing radial tree canopy buffers and temperature anomaly percentiles for educational facilities and community locations.
+- **`uhi.plotting` & `uhi.canopy_plots`**: Cartographic and charting engines for generating publication-quality 16:9 presentation graphics and transparent slide overlays.
+- **`uhi.io`**: Input/output loaders with CRS verification and spatial boundary clipping for GeoPackages, shapefiles, and GeoTIFFs.
 
-### 3. Run Test Suite
-```bash
-pytest tests/
-```
+### 2. Pipeline Execution Stages (`scripts/`)
+- **`scripts/01_canopy/`**:
+  - `make_canopy_grid.py`: Ingests jurisdictional tree canopy polygons and aggregates coverage percentages to the study grid.
+  - `validate_canopy.py`: Validates raster aggregation against vector geometries.
+  - `make_canopy_map.py`: Produces overview canopy maps.
+- **`scripts/02_temperature/`**:
+  - `add_temperature_to_grid.py`: Samples continuous temperature GeoTIFFs onto analytical grid cells.
+  - `make_uhi_maps.py`: Generates diurnal temperature and anomaly cartography.
+  - `generate_measurement_maps.py`: Plots raw mobile sensor traverse tracks.
+- **`scripts/03_hotspots/`**:
+  - `make_hotspot_analysis.py`: Computes spatial autocorrelation and Getis-Ord $G_i^*$ statistics.
+  - `generate_significance_maps.py`: Renders statistically significant hot and cold spot cluster maps.
+- **`scripts/04_schools_exposure/`**:
+  - `process_schools.py`: Consolidates and standardizes school point and building footprint locations.
+  - `analyze_schools.py`: Calculates surrounding tree canopy buffers and heat vulnerability rankings.
+- **`scripts/05_presentation_graphics/`**:
+  - `export_transparent_maps.py`: Renders borderless, high-resolution transparent PNG maps.
+  - `create_quintile_options.py`: Computes canopy quintile temperature distributions.
+  - `make_analysis_plots.py`: Generates comparative bar charts and diurnal variation graphics.
+- **`scripts/06_dashboard_export/`**:
+  - `build_dashboard_data.py`: Packs grid attributes and mercator bounds into compact binary formats for web exploration.
 
 ---
 
-## Running the Pipeline
+## How to Run
 
-You can run the entire pipeline end-to-end, or execute individual stages using the master CLI runner:
+### Using the Master Pipeline CLI (`run_pipeline.py`)
+
+The pipeline runner orchestrates stages individually or end-to-end:
 
 ```bash
-# List all pipeline stages and their scripts
+# List all available stages and their scripts
 python run_pipeline.py --list
 
-# Run specific stages:
-python run_pipeline.py --stage canopy       # Stage 1: Canopy rasterization & validation
+# Run a specific stage:
+python run_pipeline.py --stage canopy       # Stage 1: Tree canopy aggregation
 python run_pipeline.py --stage temperature  # Stage 2: Zonal temperatures & UHI maps
 python run_pipeline.py --stage hotspots     # Stage 3: Spatial clustering & persistence
-python run_pipeline.py --stage schools      # Stage 4: School exposure & vulnerability
-python run_pipeline.py --stage graphics     # Stage 5: Presentation figures & slide maps
-python run_pipeline.py --stage export       # Stage 6: Web dashboard data packaging
+python run_pipeline.py --stage schools      # Stage 4: School heat exposure & buffers
+python run_pipeline.py --stage graphics     # Stage 5: Presentation graphics & transparent maps
+python run_pipeline.py --stage export       # Stage 6: Binary data export
 
 # Run the complete pipeline end-to-end:
 python run_pipeline.py --stage all
 ```
 
-Individual scripts in `scripts/` can also be run directly:
+### Running Individual Stage Scripts Directly
+
+Each script can be executed standalone from the project root:
+
 ```bash
+# Example: Aggregating canopy percentage onto grid
 python scripts/01_canopy/make_canopy_grid.py
+
+# Example: Hotspot and spatial persistence analysis
 python scripts/03_hotspots/make_hotspot_analysis.py
-python scripts/06_dashboard_export/build_dashboard_data.py
+
+# Example: School heat exposure analysis
+python scripts/04_schools_exposure/analyze_schools.py
 ```
-*(Root-level backwards-compatibility wrappers are also maintained for convenience).*
-
----
-
-## Two-Repository Architecture
-
-This project is partitioned into two distinct, decoupled repositories:
-
-1. **`nova-uhi-analysis` (This Repository)**: Contains the scientific Python codebase, heavy GIS dependencies (GDAL, GeoPandas, rasterio), spatial modeling algorithms, raw datasets, and analytical products.
-2. **`nova-uhi-dashboard` ([`web_dashboard/`](web_dashboard/README.md))**: Contains the zero-build, client-side web application. It consumes pre-rendered binary data packages emitted by Stage 6 (`scripts/06_dashboard_export/build_dashboard_data.py`) and can be deployed directly to GitHub Pages or embedded into external websites with zero server dependencies.

@@ -71,3 +71,11 @@ desktop.ini
 scratch/
 .system_generated/
 school_locs.gpkg
+
+# 10. AI Agent Configuration & Skills
+.agents/
+
+# 11. Local Markdown Documentation (Excluded from repo except README.md)
+*.md
+!README.md
+
