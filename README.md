@@ -26,7 +26,7 @@ For the interactive public explorer, see the sister repository in [`web_dashboar
 ## Directory Organization
 
 ```
-NOVA Campaign /
+uhi-campaign-tools /
 ├── run_pipeline.py                 # Master CLI runner to execute all or individual stages
 ├── pyproject.toml                  # Python package configuration (pip install -e .)
 ├── environment.yml                 # Conda environment definition (conda-forge)
