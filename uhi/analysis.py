@@ -18,6 +18,8 @@ import pandas as pd
 import pyogrio
 from scipy import stats
 
+from uhi.variables import get_variable_spec
+
 # Configure global default font to Figtree
 matplotlib.rcParams["font.family"] = "sans-serif"
 matplotlib.rcParams["font.sans-serif"] = ["Figtree", "DejaVu Sans"]
@@ -108,6 +110,26 @@ QUINTILE_LABELS = ["0–20%\n(Q1)", "20–40%\n(Q2)", "40–60%\n(Q3)", "60–80
 QUINTILE_SHORT_LABELS = ["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"]
 
 
+def _get_col_meta(var_col: str, variable: str = "temperature") -> Dict[str, Union[str, bool]]:
+    """Return display metadata for a column adapted to the chosen variable ('temperature' or 'heat_index')."""
+    if var_col not in VARIABLE_CONFIG:
+        raise KeyError(f"Unknown variable column '{var_col}'. Available: {list(VARIABLE_CONFIG.keys())}")
+    cfg = dict(VARIABLE_CONFIG[var_col])
+    spec = get_variable_spec(variable)
+    if spec.key != "temperature":
+        cfg["full_title"] = (
+            str(cfg["full_title"])
+            .replace("Air Temperature", spec.display_name)
+            .replace("Temperature Anomaly", f"{spec.short_name} Anomaly")
+        )
+        cfg["ylabel"] = (
+            str(cfg["ylabel"])
+            .replace("Air Temperature", spec.display_name)
+            .replace("Temperature Anomaly", f"{spec.short_name} Anomaly")
+        )
+    return cfg
+
+
 def load_analysis_dataframe(gpkg_path: Union[str, Path]) -> pd.DataFrame:
     """Load grid data and prepare cleaned analysis dataframe with canopy quintiles and anomalies."""
     p = Path(gpkg_path)
@@ -144,15 +166,13 @@ def plot_scatter_canopy_temp(
     var_col: str,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Generate a 16:9 scatter plot with hexbin density and linear regression trendline.
-    Supports both absolute temperature and temperature anomaly.
+    Supports both absolute temperature/heat index and spatial anomaly.
     """
-    if var_col not in VARIABLE_CONFIG:
-        raise KeyError(f"Unknown variable column '{var_col}'. Available: {list(VARIABLE_CONFIG.keys())}")
-
-    cfg = VARIABLE_CONFIG[var_col]
+    cfg = _get_col_meta(var_col, variable)
     is_anomaly = bool(cfg["is_anomaly"])
 
     x = df["canopy_pct"].values
@@ -210,7 +230,9 @@ def plot_scatter_canopy_temp(
 
     # Annotation box with statistical parameters
     delta_100 = slope * 100.0  # Cooling across 0% to 100% canopy
-    fit_symbol = "T_anom" if is_anomaly else "T"
+    spec = get_variable_spec(variable)
+    base_sym = "HI" if spec.key == "heat_index" else "T"
+    fit_symbol = f"{base_sym}_anom" if is_anomaly else base_sym
     stats_text = (
         f"Linear Fit: {fit_symbol} = {slope:+.3f} × Canopy + {intercept:.2f}\n"
         f"Pearson r:  {r_val:+.3f}  (R² = {r2:.3f})\n"
@@ -268,9 +290,10 @@ def plot_grouped_barchart(
     cols: Optional[List[str]] = None,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
-    Generate a 16:9 grouped bar chart of temperature or anomaly across canopy quintiles
+    Generate a 16:9 grouped bar chart of temperature, heat index, or anomaly across canopy quintiles
     with 95% confidence intervals for AM, AF, and PM.
 
     When plotting anomalies, applies clean presentation styling:
@@ -285,7 +308,24 @@ def plot_grouped_barchart(
     if cols is None:
         cols = ["temp_am", "temp_af", "temp_pm"]
 
-    is_anomaly = any(VARIABLE_CONFIG.get(c, {}).get("is_anomaly", False) for c in cols)
+    spec = get_variable_spec(variable)
+    col_cfgs = [_get_col_meta(c, variable) for c in cols]
+    is_anomaly = any(bool(cfg.get("is_anomaly", False)) for cfg in col_cfgs)
+
+    agg_stats = []
+    all_tops = []
+    all_bots = []
+    for c in cols:
+        agg = df.groupby("quintile", observed=False)[c].agg(["mean", "sem"])
+        means = agg["mean"].values
+        ci95 = 1.96 * agg["sem"].values
+        agg_stats.append((means, ci95))
+        all_tops.extend((means + np.nan_to_num(ci95)).tolist())
+        all_bots.extend((means - np.nan_to_num(ci95)).tolist())
+
+    data_max = float(np.nanmax(all_tops))
+    data_min = float(np.nanmin(all_bots))
+    data_span = max(data_max - min(data_min, 0.0) if is_anomaly else data_max - data_min, 2.0)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
 
@@ -313,16 +353,16 @@ def plot_grouped_barchart(
         ax.axhline(0, color="#BDC3C7", linestyle="-", linewidth=1.2, zorder=1)
     else:
         ax = fig.add_axes([0.08, 0.14, 0.88, 0.72])
-        ax.set_ylabel("Mean Air Temperature (°F)", fontsize=13, weight="bold", color="#1F2937", labelpad=10, fontfamily="Figtree")
-        ax.set_ylim(74, 100)
+        ax.set_ylabel(f"Mean {spec.display_name} ({spec.unit})", fontsize=13, weight="bold", color="#1F2937", labelpad=10, fontfamily="Figtree")
+        y_floor = float(np.floor((data_min - max(4.0, data_span * 0.18)) / 2.0) * 2.0)
+        y_ceil = float(np.ceil((data_max + max(5.5, data_span * 0.34)) / 2.0) * 2.0)
+        ax.set_ylim(y_floor, y_ceil)
         ax.grid(axis="y", linestyle=":", alpha=0.7, color="#9CA3AF", zorder=0)
 
-    for i, col in enumerate(cols):
-        cfg = VARIABLE_CONFIG[col]
-        agg = df.groupby("quintile", observed=False)[col].agg(["mean", "sem"])
-        means = agg["mean"].values
-        ci95 = 1.96 * agg["sem"].values
+    anom_txt_gap = max(0.10, data_span * 0.025)
+    abs_txt_gap = max(0.35, data_span * 0.015)
 
+    for i, (col, cfg, (means, ci95)) in enumerate(zip(cols, col_cfgs, agg_stats)):
         offset = (i - 1) * bar_width
         pos = indices + offset
 
@@ -344,10 +384,10 @@ def plot_grouped_barchart(
             # Bar text label: same color as the corresponding bar
             for bar, m, ci in zip(bars, means, ci95):
                 if m >= 0:
-                    y_txt = m + ci + 0.10
+                    y_txt = m + ci + anom_txt_gap
                     va = "bottom"
                 else:
-                    y_txt = m - ci - 0.12
+                    y_txt = m - ci - anom_txt_gap
                     va = "top"
                 txt = f"{m:+.2f}°"
                 ax.text(
@@ -375,10 +415,10 @@ def plot_grouped_barchart(
                 label=cfg["label"],
                 zorder=3,
             )
-            for bar, m in zip(bars, means):
+            for bar, m, ci in zip(bars, means, ci95):
                 ax.text(
                     bar.get_x() + bar.get_width() / 2.0,
-                    bar.get_height() + 0.45,
+                    bar.get_height() + np.nan_to_num(ci) + abs_txt_gap,
                     f"{m:.1f}°",
                     ha="center",
                     va="bottom",
@@ -390,7 +430,9 @@ def plot_grouped_barchart(
                 )
 
     if is_anomaly:
-        ax.set_ylim(-3.1, 2.8)
+        y_anom_min = min(-3.1, float(np.floor((min(data_min, 0.0) - max(0.65, data_span * 0.16)) * 10) / 10))
+        y_anom_max = max(2.8, float(np.ceil((max(data_max, 0.0) + max(0.85, data_span * 0.25)) * 10) / 10))
+        ax.set_ylim(y_anom_min, y_anom_max)
 
         # 1. Spectrum Directional Guide placed directly ABOVE the x labels in #16A085 without background box (narrowed span)
         dots = " · " * 18
@@ -435,7 +477,7 @@ def plot_grouped_barchart(
         fig.text(
             0.08,
             0.94,
-            "Mean Air Temperature Anomaly by Tree Canopy Quintile & Collection Time",
+            f"Mean {spec.display_name} Anomaly by Tree Canopy Quintile & Collection Time",
             ha="left",
             va="top",
             fontsize=16,
@@ -448,8 +490,8 @@ def plot_grouped_barchart(
         clean_legend_names = {"anom_am": "Morning", "anom_af": "Afternoon", "anom_pm": "Evening",
                               "temp_am": "Morning", "temp_af": "Afternoon", "temp_pm": "Evening"}
         legend_handles = [
-            matplotlib.patches.Patch(facecolor=VARIABLE_CONFIG[c]["color"], edgecolor="none", label=clean_legend_names.get(c, VARIABLE_CONFIG[c]["label"]))
-            for c in cols
+            matplotlib.patches.Patch(facecolor=col_cfgs[idx]["color"], edgecolor="none", label=clean_legend_names.get(c, col_cfgs[idx]["label"]))
+            for idx, c in enumerate(cols)
         ]
         leg = ax.legend(
             handles=legend_handles,
@@ -485,7 +527,7 @@ def plot_grouped_barchart(
         ax.set_xticks(indices)
         ax.set_xticklabels(QUINTILE_LABELS, fontsize=12, color="#1F2937", fontfamily="Figtree")
         ax.legend(fontsize=12, frameon=True, facecolor="#FFFFFF", edgecolor="#D1D5DB", loc="upper right")
-        fig.suptitle("Mean Air Temperature by Tree Canopy Quintile & Collection Time", fontsize=17, weight="bold", color="#111827", fontfamily="Figtree", y=0.95)
+        fig.suptitle(f"Mean {spec.display_name} by Tree Canopy Quintile & Collection Time", fontsize=17, weight="bold", color="#111827", fontfamily="Figtree", y=0.95)
         fig.text(0.52, 0.89, "Error bars represent 95% confidence intervals of the mean • Northern Virginia Heat Watch Campaign", ha="center", fontsize=11.5, color="#4B5563", style="italic", fontfamily="Figtree")
 
     if output_path is not None:
@@ -502,10 +544,11 @@ def plot_single_barchart(
     var_col: str,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Generate an individual 16:9 bar chart for a single collection time with 95% CIs.
-    Supports both absolute temperature and temperature anomaly.
+    Supports both absolute temperature/heat index and spatial anomaly.
 
     When plotting anomaly, applies clean presentation styling:
     - Removes bar edges.
@@ -515,10 +558,7 @@ def plot_single_barchart(
     - Moves suptitle to a caption at the bottom.
     - Matches bar label colors to the bar color.
     """
-    if var_col not in VARIABLE_CONFIG:
-        raise KeyError(f"Unknown variable column '{var_col}'. Available: {list(VARIABLE_CONFIG.keys())}")
-
-    cfg = VARIABLE_CONFIG[var_col]
+    cfg = _get_col_meta(var_col, variable)
     is_anomaly = bool(cfg["is_anomaly"])
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
@@ -561,12 +601,14 @@ def plot_single_barchart(
         )
 
         # Value labels matching bar color
+        anom_span = max(float(np.max(means + ci95) - min(np.min(means - ci95), 0.0)), 2.0)
+        gap_anom = max(0.10, anom_span * 0.025)
         for bar, m, n, ci in zip(bars, means, counts, ci95):
             if m >= 0:
-                y_txt = m + ci + 0.10
+                y_txt = m + ci + gap_anom
                 va = "bottom"
             else:
-                y_txt = m - ci - 0.12
+                y_txt = m - ci - gap_anom
                 va = "top"
             label_text = f"{m:+.2f} °F\n(N={n:,})"
             ax.text(
@@ -582,8 +624,8 @@ def plot_single_barchart(
                 zorder=4,
             )
 
-        y_min_bound = min(means.min() - 0.9, -3.2)
-        y_max_bound = max(means.max() + 1.3, 2.6)
+        y_min_bound = min(float(np.min(means - ci95)) - max(0.9, anom_span * 0.22), -3.2)
+        y_max_bound = max(float(np.max(means + ci95)) + max(1.3, anom_span * 0.30), 2.6)
         ax.set_ylim(y_min_bound, y_max_bound)
 
         # Cooling shift annotation
@@ -639,14 +681,15 @@ def plot_single_barchart(
             linewidth=1.2,
             zorder=3,
         )
-        y_floor = np.floor(means.min()) - 1.5
-        y_ceil = np.ceil(means.max()) + 1.5
+        val_span = max(float((means + ci95).max() - (means - ci95).min()), 1.0)
+        y_floor = float(np.floor((means - ci95).min()) - max(1.5, val_span * 0.18))
+        y_ceil = float(np.ceil((means + ci95).max()) + max(1.8, val_span * 0.42))
         ax.set_ylim(y_floor, y_ceil)
 
-        for bar, m, n in zip(bars, means, counts):
+        for bar, m, n, ci in zip(bars, means, counts, ci95):
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
-                bar.get_height() + 0.15,
+                bar.get_height() + np.nan_to_num(ci) + max(0.15, val_span * 0.03),
                 f"{m:.2f} °F\n(N={n:,})",
                 ha="center",
                 va="bottom",
@@ -657,11 +700,12 @@ def plot_single_barchart(
                 zorder=4,
             )
 
-        total_cooling = means[0] - means[-1]
+        shift = float(means[-1] - means[0])
+        shift_label = "Cooling Shift" if shift < 0 else "Shift"
         ax.text(
             0.04,
             0.88,
-            f"Quintile 1 → 5 Cooling Effect:  Δ = -{total_cooling:.2f} °F",
+            f"Quintile 1 → 5 {shift_label}: {shift:+.2f} °F",
             transform=ax.transAxes,
             fontsize=12,
             weight="bold",
@@ -693,15 +737,18 @@ def plot_grouped_boxplot(
     cols: Optional[List[str]] = None,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
-    Generate a 16:9 grouped boxplot comparing temperature or anomaly distributions
+    Generate a 16:9 grouped boxplot comparing temperature, heat index, or anomaly distributions
     across canopy quintiles for Morning, Afternoon, and Evening.
     """
     if cols is None:
         cols = ["temp_am", "temp_af", "temp_pm"]
 
-    is_anomaly = any(VARIABLE_CONFIG.get(c, {}).get("is_anomaly", False) for c in cols)
+    spec = get_variable_spec(variable)
+    col_cfgs = [_get_col_meta(c, variable) for c in cols]
+    is_anomaly = any(bool(cfg.get("is_anomaly", False)) for cfg in col_cfgs)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.08, 0.14, 0.88, 0.72])
@@ -712,8 +759,8 @@ def plot_grouped_boxplot(
     if is_anomaly:
         ax.axhline(0, color="#4B5563", linestyle="--", linewidth=1.4, alpha=0.85, zorder=1)
 
-    for i, col in enumerate(cols):
-        cfg = VARIABLE_CONFIG[col]
+    whisker_vals = []
+    for i, (col, cfg) in enumerate(zip(cols, col_cfgs)):
         data_by_q = [df[df["quintile"] == q][col].values for q in QUINTILE_SHORT_LABELS]
 
         positions = np.arange(n_groups) + (i - 1) * bar_width
@@ -731,24 +778,32 @@ def plot_grouped_boxplot(
             whiskerprops=dict(color="#1E293B", linewidth=1.2),
             capprops=dict(color="#1E293B", linewidth=1.2),
         )
+        for w in bp["whiskers"]:
+            whisker_vals.extend(np.asarray(w.get_ydata(), dtype=float).tolist())
 
     ax.set_xlabel("Tree Canopy Cover Quintile", fontsize=13, weight="bold", color="#1F2937", labelpad=12, fontfamily="Figtree")
-    ylabel = "Air Temperature Anomaly (°F)" if is_anomaly else "Air Temperature (°F)"
+    ylabel = f"{spec.display_name} Anomaly ({spec.unit})" if is_anomaly else f"{spec.display_name} ({spec.unit})"
     ax.set_ylabel(ylabel, fontsize=13, weight="bold", color="#1F2937", labelpad=10, fontfamily="Figtree")
     ax.set_xticks(np.arange(n_groups))
     ax.set_xticklabels(QUINTILE_LABELS, fontsize=11, color="#1F2937", fontfamily="Figtree")
 
+    finite_whiskers = [v for v in whisker_vals if np.isfinite(v)]
+    w_min = float(min(finite_whiskers)) if finite_whiskers else -5.0
+    w_max = float(max(finite_whiskers)) if finite_whiskers else 5.0
     if is_anomaly:
-        ax.set_ylim(-8.0, 8.0)
+        abs_lim = max(abs(w_min), abs(w_max), 6.5)
+        y_lim = float(np.ceil(abs_lim) + 1.5)
+        ax.set_ylim(-y_lim, y_lim)
     else:
-        ax.set_ylim(72, 102)
+        span = max(w_max - w_min, 5.0)
+        ax.set_ylim(float(np.floor(w_min - 2.0)), float(np.ceil(w_max + max(6.5, span * 0.34))))
 
     ax.grid(axis="y", linestyle=":", alpha=0.7, color="#9CA3AF")
 
     # Custom legend
     handles = [
-        matplotlib.patches.Patch(facecolor=VARIABLE_CONFIG[t]["color"], edgecolor="#1E293B", label=VARIABLE_CONFIG[t]["label"])
-        for t in cols
+        matplotlib.patches.Patch(facecolor=col_cfgs[idx]["color"], edgecolor="#1E293B", label=col_cfgs[idx]["label"])
+        for idx in range(len(cols))
     ]
     handles.append(
         matplotlib.lines.Line2D([0], [0], color="#111827", linewidth=1.8, label="Median")
@@ -759,9 +814,9 @@ def plot_grouped_boxplot(
     ax.legend(handles=handles, fontsize=11, frameon=True, facecolor="#FFFFFF", edgecolor="#D1D5DB", loc="upper right")
 
     main_title = (
-        "Air Temperature Anomaly Distributions by Tree Canopy Quintile & Collection Time"
+        f"{spec.display_name} Anomaly Distributions by Tree Canopy Quintile & Collection Time"
         if is_anomaly
-        else "Air Temperature Distributions by Tree Canopy Quintile & Collection Time"
+        else f"{spec.display_name} Distributions by Tree Canopy Quintile & Collection Time"
     )
     sub_title = (
         "Boxplots display Median, IQR (25th–75th), and 1.5×IQR whiskers • Reference line at 0 °F (Spatial Mean)"
@@ -786,15 +841,13 @@ def plot_single_boxplot(
     var_col: str,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Generate an individual 16:9 boxplot for a single collection time across canopy quintiles.
-    Supports both absolute temperature and temperature anomaly.
+    Supports both absolute temperature/heat index and spatial anomaly.
     """
-    if var_col not in VARIABLE_CONFIG:
-        raise KeyError(f"Unknown variable column '{var_col}'. Available: {list(VARIABLE_CONFIG.keys())}")
-
-    cfg = VARIABLE_CONFIG[var_col]
+    cfg = _get_col_meta(var_col, variable)
     is_anomaly = bool(cfg["is_anomaly"])
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
@@ -860,14 +913,17 @@ def plot_single_boxplot(
     ax.set_xticklabels(QUINTILE_LABELS, fontsize=11, color="#1F2937", fontfamily="Figtree")
     ax.grid(axis="y", linestyle=":", alpha=0.7, color="#9CA3AF")
 
-    # Adjust y limits
-    all_data = np.concatenate(data_by_q)
+    # Adjust y limits dynamically from rendered whiskers and box headroom
+    whisker_vals = [v for w in bp["whiskers"] for v in np.asarray(w.get_ydata(), dtype=float)]
+    w_min = float(np.nanmin(whisker_vals))
+    w_max = float(np.nanmax(whisker_vals))
+    w_span = max(w_max - w_min, 2.0)
     if is_anomaly:
-        y_abs_max = max(abs(np.percentile(all_data, 0.5)), abs(np.percentile(all_data, 99.5)))
-        y_lim = max(np.ceil(y_abs_max) + 1.2, 7.5)
+        y_abs_max = max(abs(w_min), abs(w_max), 6.0)
+        y_lim = float(np.ceil(y_abs_max) + 1.8)
         ax.set_ylim(-y_lim, y_lim)
     else:
-        ax.set_ylim(np.floor(np.percentile(all_data, 1)) - 1.0, np.ceil(np.percentile(all_data, 99)) + 2.0)
+        ax.set_ylim(float(np.floor(w_min - 1.0)), float(np.ceil(w_max + max(2.2, w_span * 0.28))))
 
     fig.suptitle(
         f"{cfg['full_title']} Distribution by Canopy Quintile",

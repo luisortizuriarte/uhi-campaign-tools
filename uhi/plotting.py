@@ -12,6 +12,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 
 from uhi.io import UHIRaster
+from uhi.variables import get_variable_spec
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +120,10 @@ def plot_single_map(
     add_basemap: bool = True,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
-    Render an individual 16:9 presentation map of either temperature or spatial anomaly.
+    Render an individual 16:9 presentation map of either temperature/heat index or spatial anomaly.
 
     Parameters
     ----------
@@ -137,11 +139,14 @@ def plot_single_map(
         Filepath to save the resulting PNG.
     dpi : int
         Resolution for output image.
+    variable : str
+        Variable key ('temperature' or 'heat_index') for labels and titles.
     """
     if kind not in ("temperature", "anomaly"):
         raise ValueError(f"Unknown kind '{kind}'. Expected 'temperature' or 'anomaly'.")
 
     _configure_figtree()
+    var_spec = get_variable_spec(variable)
 
     stats = raster.summary()
     crs_str = raster.crs.to_string()
@@ -163,8 +168,8 @@ def plot_single_map(
         vmin, vmax = compute_temperature_limits(raster)
         norm = Normalize(vmin=vmin, vmax=vmax)
         data_to_plot = raster.data
-        cbar_label = "Air Temperature (°F)"
-        title_main = f"{raster.label} — Air Temperature"
+        cbar_label = f"{var_spec.display_name} ({var_spec.unit})"
+        title_main = f"{raster.label} — {var_spec.display_name}"
         title_sub = (
             f"Northern Virginia UHI Campaign • Spatial Mean: {stats['mean']:.1f} °F  "
             f"[Min: {stats['min']:.1f} °F, Max: {stats['max']:.1f} °F]"
@@ -175,10 +180,10 @@ def plot_single_map(
         vmin, vmax = -lim, lim
         norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
         data_to_plot = raster.anomaly
-        cbar_label = "Temperature Anomaly (°F)"
+        cbar_label = f"{var_spec.short_name} Anomaly ({var_spec.unit})"
         anom_min = stats["min"] - stats["mean"]
         anom_max = stats["max"] - stats["mean"]
-        title_main = f"{raster.label} — Spatial Temperature Anomaly"
+        title_main = f"{raster.label} — Spatial {var_spec.short_name} Anomaly"
         title_sub = (
             f"Deviation from Spatial Mean ({stats['mean']:.1f} °F) • "
             f"Range: {anom_min:+.1f} °F to {anom_max:+.1f} °F"
@@ -253,17 +258,19 @@ def plot_panel(
     add_basemap: bool = True,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, List[plt.Axes]]:
     """
     Render a 3-panel comparison figure (AM, AF, PM) in 16:9 widescreen format.
 
-    For temperature: each panel has an individual horizontal colorbar reflecting its diurnal range.
+    For temperature/heat index: each panel has an individual horizontal colorbar reflecting its diurnal range.
     For anomaly: all panels share one unified symmetric horizontal colorbar.
     """
     if kind not in ("temperature", "anomaly"):
         raise ValueError(f"Unknown kind '{kind}'. Expected 'temperature' or 'anomaly'.")
 
     _configure_figtree()
+    var_spec = get_variable_spec(variable)
 
     n_panels = len(rasters)
     if n_panels != 3:
@@ -319,10 +326,10 @@ def plot_panel(
             if has_basemap:
                 _apply_basemap_labels(ax, crs_str)
 
-            # Individual horizontal colorbar beneath each temperature map
+            # Individual horizontal colorbar beneath each value map
             cbar_ax = fig.add_axes([ax_left + 0.015, 0.10, panel_width - 0.03, 0.028])
             cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal", extend="both")
-            cb.set_label(f"{r.label} Temp (°F)", fontsize=10, weight="bold", labelpad=4, color="#222222")
+            cb.set_label(f"{r.label} {var_spec.abbr} ({var_spec.unit})", fontsize=10, weight="bold", labelpad=4, color="#222222")
             cb.ax.tick_params(labelsize=9, colors="#222222")
             cb.outline.set_edgecolor("#444444")
             cb.outline.set_linewidth(0.8)
@@ -371,7 +378,7 @@ def plot_panel(
     # Super titles
     if kind == "temperature":
         fig.suptitle(
-            "Northern Virginia Urban Heat Island Campaign — Diurnal Temperature Progression",
+            f"Northern Virginia Urban Heat Island Campaign — Diurnal {var_spec.short_name} Progression",
             fontsize=17,
             weight="bold",
             color="#111111",
@@ -380,7 +387,7 @@ def plot_panel(
         fig.text(
             0.5,
             0.89,
-            "Air temperature surfaces modeled across Northern Virginia for Morning (AM), Afternoon (AF), and Evening (PM)",
+            f"{var_spec.display_name} surfaces modeled across Northern Virginia for Morning (AM), Afternoon (AF), and Evening (PM)",
             ha="center",
             va="center",
             fontsize=11,
@@ -388,8 +395,9 @@ def plot_panel(
             style="italic",
         )
     else:
+        anom_title_mid = "Spatial Anomalies" if var_spec.key == "temperature" else f"{var_spec.short_name} Spatial Anomalies"
         fig.suptitle(
-            "Northern Virginia Urban Heat Island Campaign — Diurnal Spatial Anomalies",
+            f"Northern Virginia Urban Heat Island Campaign — Diurnal {anom_title_mid}",
             fontsize=17,
             weight="bold",
             color="#111111",
@@ -399,7 +407,7 @@ def plot_panel(
         fig.text(
             0.5,
             0.89,
-            f"Spatial anomaly = Local Temperature − Campaign Spatial Mean ({means_str})",
+            f"Spatial anomaly = Local {var_spec.short_name} − Campaign Spatial Mean ({means_str})",
             ha="center",
             va="center",
             fontsize=11,
@@ -410,7 +418,7 @@ def plot_panel(
         # Single unified horizontal colorbar across all 3 panels
         cbar_ax = fig.add_axes([0.28, 0.09, 0.44, 0.028])
         cb = fig.colorbar(images[0], cax=cbar_ax, orientation="horizontal", extend="both")
-        cb.set_label("Spatial Temperature Anomaly (°F)", fontsize=11, weight="bold", labelpad=5, color="#222222")
+        cb.set_label(f"Spatial {var_spec.short_name} Anomaly ({var_spec.unit})", fontsize=11, weight="bold", labelpad=5, color="#222222")
         cb.ax.tick_params(labelsize=10, colors="#222222")
         cb.outline.set_edgecolor("#444444")
         cb.outline.set_linewidth(0.8)

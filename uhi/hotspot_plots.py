@@ -33,6 +33,7 @@ import scipy.stats
 from matplotlib.colors import ListedColormap
 
 from uhi.hotspots import N_ROWS, N_COLS, PERIODS, PERIOD_LABELS, CELL_AREA_KM2
+from uhi.variables import get_variable_spec
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,14 @@ def plot_map_spots_by_period(
     boundary_path: Optional[Union[str, Path]] = None,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, List[plt.Axes]]:
     """
     Generate a 3-panel widescreen map comparing Hot Spots, Cold Spots,
     and Not Significant areas across Morning (AM), Afternoon (AF), and Evening (PM).
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
 
@@ -91,7 +94,7 @@ def plot_map_spots_by_period(
     fig.text(
         0.055,
         0.950,
-        "Temperature Hot and Cold Spots by Time of Day",
+        f"{var_spec.short_name} Hot and Cold Spots by Time of Day",
         ha="left",
         va="top",
         fontsize=16,
@@ -241,12 +244,14 @@ def plot_map_persistence(
     boundary_path: Optional[Union[str, Path]] = None,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Generate a 16:9 widescreen map of diurnal persistence, highlighting locations
     that are persistent hot spots (hot at all 3 times) and persistent cold spots.
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
 
@@ -254,7 +259,7 @@ def plot_map_persistence(
     fig.text(
         0.055,
         0.950,
-        "Temperature Hot and Cold Spots",
+        f"{var_spec.short_name} Hot and Cold Spots",
         ha="left",
         va="top",
         fontsize=18,
@@ -501,11 +506,12 @@ def plot_map_persistence(
         border_color="#F5B7B1",
     )
 
-    # Section 2: Average Temperatures
+    # Section 2: Average Conditions
+    avg_header = "AVERAGE TEMPERATURES" if var_spec.key == "temperature" else "AVERAGE HEAT INDEX"
     card_ax.text(
         0.07,
         0.625,
-        "AVERAGE TEMPERATURES",
+        avg_header,
         fontsize=10.5,
         weight="bold",
         fontfamily=FONT_FAMILY,
@@ -571,11 +577,23 @@ def plot_map_persistence(
         color=COLOR_TEXT_DARK,
         va="top",
     )
+    hot_all_pct = (n_hot_all / total_valid * 100.0) if total_valid > 0 else 0.0
+    hot_c_vals = df.loc[df["hot_all3"].astype(bool) & df["canopy_pct"].notna(), "canopy_pct"].values if "canopy_pct" in df.columns else np.array([])
+    cold_c_vals = df.loc[df["cold_all3"].astype(bool) & df["canopy_pct"].notna(), "canopy_pct"].values if "canopy_pct" in df.columns else np.array([])
+    if len(hot_c_vals) > 0 and len(cold_c_vals) > 0:
+        hot_med_c = float(np.median(hot_c_vals))
+        cold_med_c = float(np.median(cold_c_vals))
+        ratio_txt = f"{cold_med_c / hot_med_c:.0f}×" if hot_med_c > 0 else "substantially"
+        canopy_line = (
+            f"• Cool refuges feature {ratio_txt} denser tree canopy cover\n"
+            f"  ({cold_med_c:.0f}% median canopy vs. {hot_med_c:.0f}% in persistent hot spots)."
+        )
+    else:
+        canopy_line = "• Cool refuges correspond strongly with dense tree canopy."
     takeaway_text = (
-        "• About 10% of Northern Virginia stays in an all-day\n"
-        "  heat cluster without diurnal cooling relief.\n"
-        "• Cool refuges feature 5× denser tree canopy cover\n"
-        "  (90% median canopy vs. 17% in persistent hot spots)."
+        f"• About {hot_all_pct:.0f}% of Northern Virginia stays in an all-day\n"
+        f"  heat cluster without diurnal cooling relief.\n"
+        f"{canopy_line}"
     )
     card_ax.text(
         0.07,
@@ -603,12 +621,14 @@ def plot_barchart_spot_area_by_period(
     summary_df: pd.DataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Grouped bar chart comparing the percentage of area that is hot vs. cold
     across Morning (AM), Afternoon (AF), and Evening (PM).
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.08, 0.16, 0.88, 0.62])
@@ -657,7 +677,7 @@ def plot_barchart_spot_area_by_period(
         edgecolor="none",
         linewidth=0,
         zorder=3,
-        label="Hot Spot Cluster (High Temp)",
+        label=f"Hot Spot Cluster (High {var_spec.abbr})",
     )
     bars_cold = ax.bar(
         pos_cold,
@@ -667,7 +687,7 @@ def plot_barchart_spot_area_by_period(
         edgecolor="none",
         linewidth=0,
         zorder=3,
-        label="Cold Spot Cluster (Low Temp)",
+        label=f"Cold Spot Cluster (Low {var_spec.abbr})",
     )
 
     # Direct value annotations on bars
@@ -698,17 +718,23 @@ def plot_barchart_spot_area_by_period(
         )
 
     ax.set_xlim(-0.6, 2.6)
-    ax.set_ylim(0, 42)
+    max_pct = max(hot_pcts + cold_pcts) if (hot_pcts or cold_pcts) else 30.0
+    ax.set_ylim(0, max(42.0, max_pct * 1.35))
 
     ax.set_xticks(indices)
     ax.tick_params(axis="x", pad=16)
     ax.set_xticklabels(labels, fontsize=12.5, weight="bold", color=COLOR_TEXT_DARK, fontfamily=FONT_FAMILY)
 
     # Title at top left
+    title_spot = (
+        "Regional Land Area Classified as Hot vs. Cold Spots by Collection Time"
+        if var_spec.key == "temperature"
+        else f"Regional Land Area Classified as {var_spec.short_name} Hot vs. Cold Spots by Collection Time"
+    )
     fig.text(
         0.08,
         0.94,
-        "Regional Land Area Classified as Hot vs. Cold Spots by Collection Time",
+        title_spot,
         ha="left",
         va="top",
         fontsize=16,
@@ -766,6 +792,7 @@ def plot_boxplot_canopy_hot_vs_cold(
     df: pd.DataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Distribution boxplot comparing tree canopy cover (%) between:
@@ -775,6 +802,7 @@ def plot_boxplot_canopy_hot_vs_cold(
     4. Regional Study Area Baseline
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.10, 0.16, 0.84, 0.62])
@@ -849,10 +877,15 @@ def plot_boxplot_canopy_hot_vs_cold(
     ax.set_xticklabels(group_labels, fontsize=12, weight="bold", color=COLOR_TEXT_DARK, fontfamily=FONT_FAMILY)
 
     # Title at top left
+    title_box = (
+        "Tree Canopy Cover: Persistent Hot Spots vs. Cold Spots"
+        if var_spec.key == "temperature"
+        else f"Tree Canopy Cover: Persistent {var_spec.short_name} Hot vs. Cold Spots"
+    )
     fig.text(
         0.08,
         0.94,
-        "Tree Canopy Cover: Persistent Hot Spots vs. Cold Spots",
+        title_box,
         ha="left",
         va="top",
         fontsize=16,
@@ -862,11 +895,20 @@ def plot_boxplot_canopy_hot_vs_cold(
     )
 
     # Subtitle with Mann-Whitney U test finding
-    u_stat, p_val = scipy.stats.mannwhitneyu(hot_canopy, cold_canopy, alternative="two-sided")
+    hot_med_v = float(np.median(hot_canopy)) if len(hot_canopy) > 0 else np.nan
+    cold_med_v = float(np.median(cold_canopy)) if len(cold_canopy) > 0 else np.nan
+    ratio_v = cold_med_v / hot_med_v if (hot_med_v and np.isfinite(hot_med_v)) else np.nan
+    u_stat, p_val = scipy.stats.mannwhitneyu(hot_canopy, cold_canopy, alternative="two-sided") if (len(hot_canopy) > 0 and len(cold_canopy) > 0) else (np.nan, np.nan)
+    p_str = "p < 0.001" if (np.isfinite(p_val) and p_val < 0.001) else f"p = {p_val:.3f}"
+    sub_box = (
+        f"Significant divergence: Persistent cold refuges have {ratio_v:.1f}× greater median tree canopy ({cold_med_v:.1f}% vs {hot_med_v:.1f}%, Mann-Whitney U {p_str})"
+        if np.isfinite(ratio_v)
+        else "Tree canopy comparison between persistent hot spots and persistent cold refuges"
+    )
     fig.text(
         0.08,
         0.90,
-        f"Significant divergence: Persistent cold refuges have 4× greater median tree canopy (90.1% vs 17.4%, Mann-Whitney U p < 0.001)",
+        sub_box,
         ha="left",
         va="top",
         fontsize=11,
@@ -902,7 +944,7 @@ def plot_boxplot_canopy_hot_vs_cold(
     fig.text(
         0.50,
         0.035,
-        "Box bounds represent 25th to 75th percentiles (IQR) • Whiskers show 1.5 × IQR • Wholly excludes cells outside canopy data footprint (n = 106,235 valid cells)",
+        f"Box bounds represent 25th to 75th percentiles (IQR) • Whiskers show 1.5 × IQR • Wholly excludes cells outside canopy data footprint (n = {len(canopy_df):,} valid cells)",
         ha="center",
         va="center",
         fontsize=10.5,
@@ -925,12 +967,14 @@ def plot_barchart_canopy_by_spot(
     summary_df: pd.DataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Grouped bar chart comparing Mean Tree Canopy Cover (%) across Hot Spots,
     Cold Spots, and Not Significant areas for each collection time.
     """
     configure_matplotlib_fonts()
+    _ = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.08, 0.16, 0.88, 0.62])
@@ -1076,12 +1120,14 @@ def plot_barchart_method_agreement(
     sens_df: pd.DataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Sensitivity comparison figure showing how Getis-Ord Gi* spatial clustering
     compares with simple top/bottom 10% percentile thresholding.
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.08, 0.16, 0.88, 0.62])
@@ -1191,10 +1237,14 @@ def plot_barchart_method_agreement(
     )
     leg.get_frame().set_boxstyle("round,pad=0.5,rounding_size=0.3")
 
+    all_shares = hot_shares + cold_shares
+    min_sh = min(all_shares) if all_shares else 95.0
+    max_sh = max(all_shares) if all_shares else 99.0
+    var_word = "temperature" if var_spec.key == "temperature" else "heat index"
     fig.text(
         0.50,
         0.035,
-        "Spatial clustering confirms 95–99% of raw temperature extremes, while eliminating isolated spurious single-cell anomalies",
+        f"Spatial clustering confirms {min_sh:.0f}–{max_sh:.0f}% of raw {var_word} extremes, while eliminating isolated spurious single-cell anomalies",
         ha="center",
         va="center",
         fontsize=10.5,
@@ -1217,12 +1267,14 @@ def plot_barchart_persistence(
     pers_df: pd.DataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = DEFAULT_DPI,
+    variable: str = "temperature",
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Bar chart showing total land area (km² and %) by diurnal persistence tier,
     contrasting persistent all-day hot spots vs persistent cold refuges.
     """
     configure_matplotlib_fonts()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
     ax = fig.add_axes([0.08, 0.18, 0.88, 0.60])
@@ -1295,10 +1347,15 @@ def plot_barchart_persistence(
     ax.set_xticklabels(labels, fontsize=11.5, weight="bold", color=COLOR_TEXT_DARK, fontfamily=FONT_FAMILY)
 
     # Title at top left
+    pers_title = (
+        "Diurnal Heat Persistence: Total Area by Persistence Tier"
+        if var_spec.key == "temperature"
+        else f"Diurnal {var_spec.short_name} Persistence: Total Area by Persistence Tier"
+    )
     fig.text(
         0.08,
         0.94,
-        "Diurnal Heat Persistence: Total Area by Persistence Tier",
+        pers_title,
         ha="left",
         va="top",
         fontsize=16,
@@ -1318,11 +1375,14 @@ def plot_barchart_persistence(
         color=COLOR_TEXT_MUTED,
     )
 
-    # Bottom caption
+    # Bottom caption computed dynamically
+    total_km = float(pers_df["area_km2"].sum()) if "area_km2" in pers_df.columns else 0.0
+    hot_km = areas_km[0] if areas_km else 0.0
+    hot_pct = pcts[0] if pcts else 0.0
     fig.text(
         0.50,
         0.035,
-        "Total study area = 1,444.4 km² • 143.2 km² (9.9%) of regional land remains an extreme hot spot continuously from morning through evening",
+        f"Total study area = {total_km:,.1f} km² • {hot_km:.1f} km² ({hot_pct:.1f}%) of regional land remains an extreme hot spot continuously from morning through evening",
         ha="center",
         va="center",
         fontsize=10.5,

@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+import argparse
 from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
@@ -28,6 +29,7 @@ import matplotlib.patches as patches
 import numpy as np
 
 from uhi.analysis import load_analysis_dataframe, VARIABLE_CONFIG
+from uhi.variables import get_variable_spec
 
 # Configuration & Styling Standards
 SLIDE_FIGSIZE = (13.333, 7.5)
@@ -44,12 +46,26 @@ BAR_WIDTH = 0.24
 def compute_bar_stats(df):
     """Compute means and 95% confidence intervals per quintile per period."""
     stats = {}
+    all_tops = []
+    all_bots = []
     for col in COLS:
         agg = df.groupby("quintile", observed=False)[col].agg(["mean", "sem"])
         means = agg["mean"].values
         ci95 = 1.96 * agg["sem"].values
         stats[col] = (means, ci95)
+        all_tops.extend((means + np.nan_to_num(ci95)).tolist())
+        all_bots.extend((means - np.nan_to_num(ci95)).tolist())
+    stats["_bounds"] = (float(min(all_bots)), float(max(all_tops)))
     return stats
+
+
+def _compute_ylim(stats, top_extra_frac: float = 0.25):
+    """Compute dynamic y-limits accommodating bars, CIs, text labels, and legends."""
+    bmin, bmax = stats["_bounds"]
+    span = max(bmax - min(bmin, 0.0), 2.0)
+    y_lo = min(-3.1, float(np.floor((bmin - max(0.65, span * 0.16)) * 10) / 10))
+    y_hi = max(2.8, float(np.ceil((bmax + max(0.85, span * top_extra_frac)) * 10) / 10))
+    return (y_lo, y_hi), span
 
 
 def setup_base_figure(
@@ -121,9 +137,10 @@ def setup_base_figure(
     return fig, ax
 
 
-def draw_bars(ax, stats):
+def draw_bars(ax, stats, span: float = 5.0):
     """Draw the grouped bars with error bars and colored value labels."""
     indices = np.arange(5)
+    txt_gap = max(0.10, span * 0.025)
     for i, col in enumerate(COLS):
         cfg = VARIABLE_CONFIG[col]
         means, ci95 = stats[col]
@@ -145,10 +162,10 @@ def draw_bars(ax, stats):
 
         for bar, m, ci in zip(bars, means, ci95):
             if m >= 0:
-                y_txt = m + ci + 0.10
+                y_txt = m + ci + txt_gap
                 va = "bottom"
             else:
-                y_txt = m - ci - 0.12
+                y_txt = m - ci - txt_gap
                 va = "top"
             ax.text(
                 bar.get_x() + bar.get_width() / 2.0,
@@ -167,20 +184,23 @@ def draw_bars(ax, stats):
 # -----------------------------------------------------------------------------
 # OPTION 1: Directional Canopy Spectrum Guide (Bottom Axis Banner)
 # -----------------------------------------------------------------------------
-def make_option_1(df, out_path: Path, transparent: bool = False):
+def make_option_1(df, out_path: Path, transparent: bool = False, variable: str = "temperature"):
     """
     Option 1: Directional Spectrum Guide.
     Adds plain-English landscape descriptors to category ticks and places an elegant
     directional spectrum guide bar beneath the axis with arrow indicators.
     """
+    var_spec = get_variable_spec(variable)
     stats = compute_bar_stats(df)
+    y_lim, span = _compute_ylim(stats, top_extra_frac=0.25)
     # Give comfortable headroom and dedicate space between plot and labels
     fig, ax = setup_base_figure(
         ax_rect=[0.08, 0.22, 0.88, 0.56],
-        y_lim=(-3.1, 2.8),
+        title_text=f"Mean {var_spec.display_name} Anomaly by Tree Canopy Quintile & Collection Time",
+        y_lim=y_lim,
         transparent=transparent,
     )
-    draw_bars(ax, stats)
+    draw_bars(ax, stats, span=span)
 
     # 1. Spectrum Directional Guide placed directly ABOVE the x labels in #16A085 without background box (narrowed span)
     dots = " · " * 18
@@ -245,15 +265,25 @@ def make_option_1(df, out_path: Path, transparent: bool = False):
 # -----------------------------------------------------------------------------
 # OPTION 2: Floating Explanatory Callout Card
 # -----------------------------------------------------------------------------
-def make_option_2(df, out_path: Path):
+def make_option_2(df, out_path: Path, variable: str = "temperature"):
     """
     Option 2: Floating Explanatory Callout Card.
     Utilizes the spacious upper-right whitespace (above Q4 & Q5) to provide a clear,
     audience-friendly card defining quintiles and their real-world meanings.
     """
+    var_spec = get_variable_spec(variable)
     stats = compute_bar_stats(df)
-    fig, ax = setup_base_figure(ax_rect=[0.08, 0.16, 0.88, 0.62], y_lim=(-3.1, 2.9))
-    draw_bars(ax, stats)
+    y_lim, span = _compute_ylim(stats, top_extra_frac=0.30)
+    y_lim = (y_lim[0], max(y_lim[1], 2.9))
+    fig, ax = setup_base_figure(
+        ax_rect=[0.08, 0.16, 0.88, 0.62],
+        title_text=f"Mean {var_spec.display_name} Anomaly by Tree Canopy Quintile & Collection Time",
+        y_lim=y_lim,
+    )
+    draw_bars(ax, stats, span=span)
+
+    # Compute max Q1 -> Q5 cooling contrast across all three periods dynamically
+    max_cool = max(float(stats[c][0][0] - stats[c][0][-1]) for c in COLS)
 
     # Category labels with archetypes
     opt2_labels = [
@@ -267,8 +297,7 @@ def make_option_2(df, out_path: Path):
     ax.set_xticklabels(opt2_labels, fontsize=11.5, color="#1F2937", fontfamily=FONT_FAMILY)
     ax.set_xlabel("Tree Canopy Cover Quintile", fontsize=12.5, weight="bold", color="#1F2937", labelpad=12, fontfamily=FONT_FAMILY)
 
-    # Explanatory Card in upper-right quadrant
-    # Positioned cleanly below legend level and comfortably above baseline
+    # Explanatory Card in upper-right quadrant (using axes coordinates to adapt to y-range)
     card_text = (
         "Understanding Tree Canopy Quintiles\n"
         "• Quintiles divide the region into 5 equal 20% tiers\n"
@@ -276,12 +305,13 @@ def make_option_2(df, out_path: Path):
         "• Q1 (0–20%): Heavily built, paved & commercial cores\n"
         "• Q3 (40–60%): Typical established suburban neighborhoods\n"
         "• Q5 (80–100%): Preserved parks, stream valleys & forests\n"
-        "• Key Finding: Tree-dense areas are up to 4.2 °F cooler"
+        f"• Key Finding: Tree-dense areas are up to {max_cool:.1f} °F cooler"
     )
     ax.text(
-        3.68,
-        0.30,
+        0.79,
+        0.52,
         card_text,
+        transform=ax.transAxes,
         ha="center",
         va="bottom",
         fontsize=9.2,
@@ -318,16 +348,32 @@ def make_option_2(df, out_path: Path):
 # -----------------------------------------------------------------------------
 # OPTION 3: Two-Zone Microclimate Banners & Transition Marker
 # -----------------------------------------------------------------------------
-def make_option_3(df, out_path: Path):
+def make_option_3(df, out_path: Path, variable: str = "temperature"):
     """
     Option 3: Two-Zone Microclimate Banners & Neutral Baseline Transition Marker.
     Visually separates the 'Heat Vulnerability Zone' (Q1-Q2) from the 'Cooling Refuge Zone' (Q4-Q5),
-    with an annotated indicator arrow at Q3 marking the 50% neutral temperature threshold.
+    with an annotated indicator arrow at Q3 marking the 50% neutral threshold.
     """
+    var_spec = get_variable_spec(variable)
     stats = compute_bar_stats(df)
-    # Set y limits with comfortable headroom for zone banners
-    fig, ax = setup_base_figure(ax_rect=[0.08, 0.16, 0.88, 0.62], y_lim=(-3.1, 3.2))
-    draw_bars(ax, stats)
+    y_lim, span = _compute_ylim(stats, top_extra_frac=0.38)
+    y_lim = (y_lim[0], max(y_lim[1], 3.2))
+    fig, ax = setup_base_figure(
+        ax_rect=[0.08, 0.16, 0.88, 0.62],
+        title_text=f"Mean {var_spec.display_name} Anomaly by Tree Canopy Quintile & Collection Time",
+        y_lim=y_lim,
+    )
+    draw_bars(ax, stats, span=span)
+
+    warm_vals = [float(stats[c][0][q]) for c in COLS for q in (0, 1)]
+    cool_vals = [float(stats[c][0][q]) for c in COLS for q in (3, 4)]
+    w_min, w_max = min(warm_vals), max(warm_vals)
+    c_hi, c_lo = max(cool_vals), min(cool_vals)
+
+    q3_top = max(float(stats[c][0][2] + stats[c][1][2]) for c in COLS)
+    banner_y = y_lim[1] - max(0.55, span * 0.11)
+    q3_arrow_y = max(0.48, q3_top + max(0.32, span * 0.08))
+    q3_text_y = q3_arrow_y + max(0.65, span * 0.13)
 
     opt3_labels = [
         "0–20%\n(Q1: Urban Core)",
@@ -340,11 +386,11 @@ def make_option_3(df, out_path: Path):
     ax.set_xticklabels(opt3_labels, fontsize=11.5, color="#1F2937", fontfamily=FONT_FAMILY)
     ax.set_xlabel("Tree Canopy Cover Quintile", fontsize=12.5, weight="bold", color="#1F2937", labelpad=12, fontfamily=FONT_FAMILY)
 
-    # 1. Warm Deficit Zone Banner (Q1-Q2: x = 0.15, y = 2.65)
+    # 1. Warm Deficit Zone Banner (Q1-Q2)
     ax.text(
         0.18,
-        2.65,
-        "HEAT VULNERABILITY ZONE (<40% Canopy)\nConsistently Warmer than Average (+0.5° to +1.7°F)",
+        banner_y,
+        f"HEAT VULNERABILITY ZONE (<40% Canopy)\nConsistently Warmer than Average ({w_min:+.1f}° to {w_max:+.1f}°F)",
         ha="center",
         va="center",
         fontsize=8.8,
@@ -362,11 +408,11 @@ def make_option_3(df, out_path: Path):
         zorder=5,
     )
 
-    # 2. Cool Refuge Zone Banner (Q4-Q5: x = 3.75, y = 2.65)
+    # 2. Cool Refuge Zone Banner (Q4-Q5)
     ax.text(
         3.75,
-        2.65,
-        "URBAN COOLING REFUGE (>60% Canopy)\nConsistently Cooler than Average (-0.6° to -2.5°F)",
+        banner_y,
+        f"URBAN COOLING REFUGE (>60% Canopy)\nConsistently Cooler than Average ({c_hi:+.1f}° to {c_lo:+.1f}°F)",
         ha="center",
         va="center",
         fontsize=8.8,
@@ -385,11 +431,10 @@ def make_option_3(df, out_path: Path):
     )
 
     # 3. Transition Marker at Q3 (x = 2.0)
-    # Positioned between top of Q3 bars (+0.46) and legend bottom
     ax.annotate(
         "Transition Threshold (~50% Canopy)\nOffsets urban heat to campaign average",
-        xy=(2.0, 0.48),
-        xytext=(2.0, 1.15),
+        xy=(2.0, q3_arrow_y),
+        xytext=(2.0, q3_text_y),
         ha="center",
         va="bottom",
         fontsize=8.8,
@@ -429,33 +474,48 @@ def make_option_3(df, out_path: Path):
 
 
 def main():
-    grid_gpkg = Path("output/canopy/grid-canopy.gpkg")
+    parser = argparse.ArgumentParser(
+        description="Generate 3 presentation layout options for canopy quintile anomaly grouped bar charts."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+
+    grid_gpkg = var_spec.grid_output_gpkg
     print(f"Loading data from {grid_gpkg}...")
     df = load_analysis_dataframe(grid_gpkg)
 
-    out_dir = Path("output/figures/analysis/options")
+    analysis_dir = var_spec.figures_dir / "analysis"
+    out_dir = analysis_dir / "options"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     opt1_path = out_dir / "barchart_canopy_quintiles_anom_grouped_opt1_spectrum.png"
-    main_grouped_path = Path("output/figures/analysis/barchart_canopy_quintiles_anom_grouped.png")
-    main_grouped_trans_path = Path("output/figures/analysis/barchart_canopy_quintiles_anom_grouped_transparent.png")
+    main_grouped_path = analysis_dir / "barchart_canopy_quintiles_anom_grouped.png"
+    main_grouped_trans_path = analysis_dir / "barchart_canopy_quintiles_anom_grouped_transparent.png"
+    central_trans_path = var_spec.figures_dir / "maps_transparent" / "barchart_canopy_quintiles_anom_grouped_transparent.png"
     opt2_path = out_dir / "barchart_canopy_quintiles_anom_grouped_opt2_card.png"
     opt3_path = out_dir / "barchart_canopy_quintiles_anom_grouped_opt3_zones.png"
 
     print("Generating Option 1 (Redone): Directional Spectrum Guide...")
-    make_option_1(df, opt1_path)
-    make_option_1(df, main_grouped_path)
-    make_option_1(df, main_grouped_trans_path, transparent=True)
+    make_option_1(df, opt1_path, variable=var_spec.key)
+    make_option_1(df, main_grouped_path, variable=var_spec.key)
+    make_option_1(df, main_grouped_trans_path, transparent=True, variable=var_spec.key)
+    make_option_1(df, central_trans_path, transparent=True, variable=var_spec.key)
     print(f"  -> Saved: {opt1_path}")
     print(f"  -> Updated: {main_grouped_path}")
     print(f"  -> Generated: {main_grouped_trans_path}")
 
     print("Generating Option 2: Floating Explanatory Callout Card...")
-    make_option_2(df, opt2_path)
+    make_option_2(df, opt2_path, variable=var_spec.key)
     print(f"  -> Saved: {opt2_path}")
 
     print("Generating Option 3: Two-Zone Microclimate Banners & Transition Marker...")
-    make_option_3(df, opt3_path)
+    make_option_3(df, opt3_path, variable=var_spec.key)
     print(f"  -> Saved: {opt3_path}")
 
     print("All 3 options generated successfully!")

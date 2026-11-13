@@ -21,6 +21,8 @@ output/canopy/
 output/hotspots/
 output/locations/
 output/figures/
+output/temperature/
+output/heat_index/
 
 # 5. Large Presentation & Office Files (>20 MB)
 *.pptx

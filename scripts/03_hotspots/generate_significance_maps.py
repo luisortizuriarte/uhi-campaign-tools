@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+import argparse
 from pathlib import Path
 import geopandas as gpd
 import matplotlib
@@ -38,6 +39,8 @@ import matplotlib.colors as mcolors
 from matplotlib.colors import ListedColormap, TwoSlopeNorm
 import numpy as np
 import pyogrio
+
+from uhi.variables import get_variable_spec
 
 # Design & typography tokens from GEMINI.md
 SLIDE_FIGSIZE = (13.333, 7.5)
@@ -102,8 +105,9 @@ def classify_confidence_tiers(df, period: str):
     return cat
 
 
-def plot_single_significance_map(df, b_gdf, period="af", output_path=None):
+def plot_single_significance_map(df, b_gdf, period="af", output_path=None, variable="temperature"):
     """Create flagship single map with right-hand key card."""
+    var_spec = get_variable_spec(variable)
     nrows = int(df["row_index"].max() - df["row_index"].min() + 1)
     ncols = int(df["col_index"].max() - df["col_index"].min() + 1)
 
@@ -120,10 +124,15 @@ def plot_single_significance_map(df, b_gdf, period="af", output_path=None):
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=DPI, facecolor="#FFFFFF")
 
     period_title = "Afternoon Peak Heat" if period == "af" else ("Morning" if period == "am" else "Evening")
+    title_text = (
+        f"Statistical Significance of Hot & Cold Spots ({period_title})"
+        if var_spec.key == "temperature"
+        else f"Statistical Significance of {var_spec.short_name} Hot & Cold Spots ({period_title})"
+    )
     fig.text(
         0.055,
         0.950,
-        f"Statistical Significance of Hot & Cold Spots ({period_title})",
+        title_text,
         ha="left",
         va="top",
         fontsize=18,
@@ -342,8 +351,9 @@ def plot_single_significance_map(df, b_gdf, period="af", output_path=None):
     return fig, ax
 
 
-def plot_diurnal_significance_panel(df, b_gdf, output_path=None):
+def plot_diurnal_significance_panel(df, b_gdf, output_path=None, variable="temperature"):
     """Create 3-panel diurnal statistical significance map (AM, AF, PM) with spacious breathing room."""
+    var_spec = get_variable_spec(variable)
     nrows = int(df["row_index"].max() - df["row_index"].min() + 1)
     ncols = int(df["col_index"].max() - df["col_index"].min() + 1)
 
@@ -356,10 +366,15 @@ def plot_diurnal_significance_panel(df, b_gdf, output_path=None):
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=DPI, facecolor="#FFFFFF")
 
     # Main Title & Subtitle
+    title_diurnal = (
+        "Statistical Significance of Hot and Cold Spots Across Collection Times"
+        if var_spec.key == "temperature"
+        else f"Statistical Significance of {var_spec.short_name} Hot and Cold Spots Across Collection Times"
+    )
     fig.text(
         0.055,
         0.950,
-        "Statistical Significance of Hot and Cold Spots Across Collection Times",
+        title_diurnal,
         ha="left",
         va="top",
         fontsize=18,
@@ -482,8 +497,9 @@ def plot_diurnal_significance_panel(df, b_gdf, output_path=None):
     return fig
 
 
-def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None):
+def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None, variable="temperature"):
     """Create continuous Getis-Ord Gi* z-score clustering intensity map with diverging scale."""
+    var_spec = get_variable_spec(variable)
     nrows = int(df["row_index"].max() - df["row_index"].min() + 1)
     ncols = int(df["col_index"].max() - df["col_index"].min() + 1)
 
@@ -502,10 +518,15 @@ def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None):
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=DPI, facecolor="#FFFFFF")
 
     period_title = "Afternoon Peak Heat" if period == "af" else ("Morning" if period == "am" else "Evening")
+    title_z = (
+        f"Getis-Ord Gi* Spatial Clustering Intensity ({period_title})"
+        if var_spec.key == "temperature"
+        else f"Getis-Ord Gi* {var_spec.short_name} Clustering Intensity ({period_title})"
+    )
     fig.text(
         0.080,
         0.945,
-        f"Getis-Ord Gi* Spatial Clustering Intensity ({period_title})",
+        title_z,
         ha="left",
         va="top",
         fontsize=18,
@@ -528,8 +549,10 @@ def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None):
     ax = fig.add_axes([0.08, 0.07, 0.66, 0.79])
 
     # Colormap: Diverging Cool-to-Warm (RdBu_r)
-    # Symmetrical limits at +/- 8.0 for clear gradient visualization
-    z_lim = 8.0
+    # Adaptive symmetric limits centered at 0 based on p0.5/p99.5 (default +/- 8.0)
+    z_valid = z_raw[inside & np.isfinite(z_raw)]
+    z_p_ext = max(abs(float(np.percentile(z_valid, 0.5))), abs(float(np.percentile(z_valid, 99.5)))) if len(z_valid) > 0 else 8.0
+    z_lim = 8.0 if z_p_ext <= 8.5 else float(np.ceil(z_p_ext / 2.0) * 2.0)
     norm = TwoSlopeNorm(vmin=-z_lim, vcenter=0.0, vmax=z_lim)
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad(color="#FFFFFF", alpha=0.0)
@@ -558,18 +581,31 @@ def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None):
     # Vertical colorbar on the right
     cbar_ax = fig.add_axes([0.77, 0.16, 0.022, 0.62])
     cb = fig.colorbar(im, cax=cbar_ax, orientation="vertical", extend="both")
-    cb.set_ticks([-8, -6, -4, -1.96, 0, 1.96, 4, 6, 8])
-    cb.set_ticklabels([
-        "-8 (Extreme Cool)",
-        "-6",
-        "-4",
-        "-1.96 (p = 0.05)",
-        "0 (Expected)",
-        "+1.96 (p = 0.05)",
-        "+4",
-        "+6",
-        "+8 (Extreme Heat)",
-    ])
+    z_lim_int = int(z_lim)
+    cb.set_ticks([-z_lim, -6, -4, -1.96, 0, 1.96, 4, 6, z_lim] if z_lim_int == 8 else [-z_lim, -z_lim / 2.0, -1.96, 0, 1.96, z_lim / 2.0, z_lim])
+    if z_lim_int == 8:
+        cb.set_ticklabels([
+            "-8 (Extreme Cool)",
+            "-6",
+            "-4",
+            "-1.96 (p = 0.05)",
+            "0 (Expected)",
+            "+1.96 (p = 0.05)",
+            "+4",
+            "+6",
+            "+8 (Extreme Heat)",
+        ])
+    else:
+        half_i = z_lim / 2.0
+        cb.set_ticklabels([
+            f"-{z_lim_int} (Extreme Cool)",
+            f"-{half_i:g}",
+            "-1.96 (p = 0.05)",
+            "0 (Expected)",
+            "+1.96 (p = 0.05)",
+            f"+{half_i:g}",
+            f"+{z_lim_int} (Extreme Heat)",
+        ])
     cb.ax.tick_params(labelsize=10.0, colors=COLOR_TEXT_DARK, length=4, width=0.8, pad=6)
     cb.outline.set_edgecolor("#9CA3AF")
     cb.outline.set_linewidth(0.8)
@@ -610,20 +646,33 @@ def plot_continuous_zscore_map(df, b_gdf, period="af", output_path=None):
 
 
 if __name__ == "__main__":
-    grid_path = Path("output/hotspots/hotspots.gpkg")
+    parser = argparse.ArgumentParser(
+        description="Generate 16:9 Gi* statistical significance and continuous z-score maps."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+
+    grid_path = var_spec.hotspots_dir / "hotspots.gpkg"
     boundary_path = Path("input_data/county_boundaries/novauhi_counties.gpkg")
+    fig_dir = var_spec.figures_dir / "hotspots"
 
     df = pyogrio.read_dataframe(grid_path, read_geometry=False)
     b_gdf = gpd.read_file(boundary_path)
 
     # 1. Flagship confidence tier map: Afternoon Peak Heat
-    out1 = Path("output/figures/hotspots/map_statistical_significance_af.png")
-    plot_single_significance_map(df, b_gdf, period="af", output_path=out1)
+    out1 = fig_dir / "map_statistical_significance_af.png"
+    plot_single_significance_map(df, b_gdf, period="af", output_path=out1, variable=var_spec.key)
 
     # 2. 3-Panel diurnal map: Statistical significance across AM, AF, PM
-    out2 = Path("output/figures/hotspots/map_statistical_significance_diurnal.png")
-    plot_diurnal_significance_panel(df, b_gdf, output_path=out2)
+    out2 = fig_dir / "map_statistical_significance_diurnal.png"
+    plot_diurnal_significance_panel(df, b_gdf, output_path=out2, variable=var_spec.key)
 
     # 3. Continuous z-score clustering intensity map
-    out3 = Path("output/figures/hotspots/map_zscore_intensity_af.png")
-    plot_continuous_zscore_map(df, b_gdf, period="af", output_path=out3)
+    out3 = fig_dir / "map_zscore_intensity_af.png"
+    plot_continuous_zscore_map(df, b_gdf, period="af", output_path=out3, variable=var_spec.key)

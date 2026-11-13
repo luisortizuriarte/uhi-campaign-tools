@@ -42,6 +42,7 @@ from uhi.plotting import (
     compute_shared_anomaly_limit,
     DEFAULT_DPI,
 )
+from uhi.variables import get_variable_spec, resolve_clipped_rasters
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,11 +101,17 @@ def main() -> int:
         help="Do not clip rasters to the region of interest boundary",
     )
     parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    parser.add_argument(
         "--output",
         "-o",
         type=Path,
-        default=Path("output/figures"),
-        help="Directory to save generated figures (default: output/figures)",
+        default=None,
+        help="Directory to save generated figures (default derived from --variable)",
     )
     parser.add_argument(
         "--dpi",
@@ -119,58 +126,63 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+    output_base = args.output if args.output is not None else var_spec.figures_dir
 
     boundary = None if args.no_clip else args.boundary
     if boundary and not boundary.is_file():
         logger.warning("Boundary file %s not found. Proceeding without boundary clipping.", boundary)
         boundary = None
 
-    clipped_defaults = [
-        Path("morning_clipped.tif"),
-        Path("afternoon_clipped.tif"),
-        Path("evening_clipped.tif"),
-    ]
-    # If using default input path and pre-clipped rasters exist in root, use them directly
-    if args.input == Path("input_data/maps") and all(f.is_file() for f in clipped_defaults):
-        logger.info("Using pre-clipped region-of-interest rasters (morning/afternoon/evening_clipped.tif)...")
-        rasters = [load_uhi_raster(f, boundary=boundary) for f in clipped_defaults]
-        rasters.sort(key=lambda r: PERIOD_ORDER.index(r.period) if r.period in PERIOD_ORDER else 99)
+    if args.input == Path("input_data/maps") and not args.no_clip:
+        logger.info("Resolving boundary-clipped %s rasters...", var_spec.display_name.lower())
+        clipped_paths = resolve_clipped_rasters(var_spec, maps_dir=args.input, boundary_path=boundary)
+        rasters = [load_uhi_raster(clipped_paths[p], boundary=None) for p in PERIOD_ORDER]
+    elif args.input == Path("input_data/maps"):
+        rasters = [
+            load_uhi_raster(args.input / var_spec.input_rasters[p], boundary=None)
+            for p in PERIOD_ORDER
+        ]
     else:
         logger.info("Loading rasters from %s (boundary clipping: %s)...", args.input, bool(boundary))
         try:
-            rasters = load_uhi_rasters(args.input, boundary=boundary)
-        except Exception as exc:
-            logger.error("Failed to load rasters: %s", exc)
-            return 1
+            rasters = load_uhi_rasters(args.input, pattern=var_spec.raster_glob, boundary=boundary)
+        except Exception:
+            try:
+                rasters = load_uhi_rasters(args.input, boundary=boundary)
+            except Exception as exc:
+                logger.error("Failed to load rasters: %s", exc)
+                return 1
 
     shared_anomaly_limit = compute_shared_anomaly_limit(rasters)
     print_summary_table(rasters, shared_anomaly_limit)
 
     add_basemap = not args.no_basemap
-    temp_dir = args.output / "temperature"
-    anom_dir = args.output / "anomaly"
-    panel_dir = args.output / "panels"
+    temp_dir = output_base / var_spec.value_subdir
+    anom_dir = output_base / "anomaly"
+    panel_dir = output_base / "panels"
 
     generated_files: list[Path] = []
 
-    # 1. Generate individual temperature maps (3 figures)
-    logger.info("Generating individual temperature maps (colormap: YlOrRd)...")
+    # 1. Generate individual value maps (3 figures)
+    logger.info("Generating individual %s maps (colormap: YlOrRd)...", var_spec.short_name.lower())
     for r in rasters:
-        out_file = temp_dir / f"uhi_temperature_{r.period}.png"
+        out_file = temp_dir / f"{var_spec.value_file_prefix}_{r.period}.png"
         fig, _ = plot_single_map(
             raster=r,
             kind="temperature",
             add_basemap=add_basemap,
             output_path=out_file,
             dpi=args.dpi,
+            variable=var_spec.key,
         )
         plt.close(fig)
         generated_files.append(out_file)
 
     # 2. Generate individual anomaly maps (3 figures)
-    logger.info("Generating individual anomaly maps (colormap: Spectral_r)...")
+    logger.info("Generating individual %s anomaly maps (colormap: Spectral_r)...", var_spec.short_name.lower())
     for r in rasters:
-        out_file = anom_dir / f"uhi_anomaly_{r.period}.png"
+        out_file = anom_dir / f"{var_spec.anomaly_file_prefix}_{r.period}.png"
         fig, _ = plot_single_map(
             raster=r,
             kind="anomaly",
@@ -178,25 +190,27 @@ def main() -> int:
             add_basemap=add_basemap,
             output_path=out_file,
             dpi=args.dpi,
+            variable=var_spec.key,
         )
         plt.close(fig)
         generated_files.append(out_file)
 
     # 3. Generate 3-panel comparison figures (2 figures)
-    logger.info("Generating 3-panel temperature progression figure...")
-    temp_panel_file = panel_dir / "uhi_temperature_panel.png"
+    logger.info("Generating 3-panel %s progression figure...", var_spec.short_name.lower())
+    temp_panel_file = panel_dir / f"{var_spec.value_file_prefix}_panel.png"
     fig, _ = plot_panel(
         rasters=rasters,
         kind="temperature",
         add_basemap=add_basemap,
         output_path=temp_panel_file,
         dpi=args.dpi,
+        variable=var_spec.key,
     )
     plt.close(fig)
     generated_files.append(temp_panel_file)
 
-    logger.info("Generating 3-panel anomaly progression figure...")
-    anom_panel_file = panel_dir / "uhi_anomaly_panel.png"
+    logger.info("Generating 3-panel %s anomaly progression figure...", var_spec.short_name.lower())
+    anom_panel_file = panel_dir / f"{var_spec.anomaly_file_prefix}_panel.png"
     fig, _ = plot_panel(
         rasters=rasters,
         kind="anomaly",
@@ -204,6 +218,7 @@ def main() -> int:
         add_basemap=add_basemap,
         output_path=anom_panel_file,
         dpi=args.dpi,
+        variable=var_spec.key,
     )
     plt.close(fig)
     generated_files.append(anom_panel_file)

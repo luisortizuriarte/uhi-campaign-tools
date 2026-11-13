@@ -66,10 +66,15 @@ STAGES = {
     },
 }
 
-def run_script(script_path: Path) -> bool:
-    print(f"\n---> Executing: {script_path.relative_to(PROJECT_ROOT)}")
+VARIABLE_SUPPORTED_STAGES = {"temperature", "hotspots", "schools", "graphics"}
+
+
+def run_script(script_path: Path, extra_args: list[str] | None = None) -> bool:
+    cmd = [sys.executable, str(script_path)] + (extra_args or [])
+    arg_str = f" {' '.join(extra_args)}" if extra_args else ""
+    print(f"\n---> Executing: {script_path.relative_to(PROJECT_ROOT)}{arg_str}")
     t0 = time.time()
-    res = subprocess.run([sys.executable, str(script_path)])
+    res = subprocess.run(cmd)
     elapsed = time.time() - t0
     if res.returncode == 0:
         print(f"     [SUCCESS] Completed in {elapsed:.1f}s")
@@ -77,6 +82,7 @@ def run_script(script_path: Path) -> bool:
     else:
         print(f"     [FAILED] Exited with code {res.returncode} after {elapsed:.1f}s")
         return False
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -88,6 +94,12 @@ def main():
         choices=["all", "canopy", "temperature", "hotspots", "schools", "graphics", "export"],
         default="all",
         help="Pipeline stage to execute (default: all)",
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index", "both"],
+        default="temperature",
+        help="Climatic variable to analyze: 'temperature', 'heat_index', or 'both' (default: temperature)",
     )
     parser.add_argument(
         "--list",
@@ -105,32 +117,62 @@ def main():
         print("\n==========================================================")
         return
 
-    stages_to_run = list(STAGES.keys()) if args.stage == "all" else [args.stage]
+    variables_to_run = ["temperature", "heat_index"] if args.variable == "both" else [args.variable]
+    shared_canopy_exists = (
+        Path("output/canopy/grid-canopy.gpkg").is_file()
+        and Path("output/canopy/canopy_mask_1m.tif").is_file()
+    )
+    shared_schools_exist = Path("output/locations/school_locs.gpkg").is_file()
+
+    if args.stage == "all":
+        stages_to_run = ["temperature", "hotspots", "schools", "graphics"]
+        if not shared_canopy_exists:
+            stages_to_run.insert(0, "canopy")
+    else:
+        stages_to_run = [args.stage]
 
     print("\n" + "=" * 65)
     print("  NORTHERN VIRGINIA URBAN HEAT ISLAND ANALYSIS PIPELINE")
     print("=" * 65)
-    print(f"Selected stage(s): {', '.join(stages_to_run)}")
+    print(f"Selected variable(s): {', '.join(variables_to_run)}")
+    print(f"Selected stage(s):    {', '.join(stages_to_run)}")
 
     overall_start = time.time()
-    total_scripts = sum(len(STAGES[s]["scripts"]) for s in stages_to_run)
     completed_scripts = 0
+    total_scripts = 0
 
-    for stage_key in stages_to_run:
-        stage = STAGES[stage_key]
-        print(f"\n=================================================================")
-        print(f"  {stage['title']}")
-        print(f"=================================================================")
+    for var_key in variables_to_run:
+        print("\n" + "#" * 65)
+        print(f"  RUNNING PIPELINE FOR VARIABLE: {var_key.upper()}")
+        print("#" * 65)
 
-        for script in stage["scripts"]:
-            if not script.exists():
-                print(f"Error: Script not found: {script}")
-                sys.exit(1)
-            success = run_script(script)
-            if not success:
-                print(f"\nPipeline halted due to error in {script.name}")
-                sys.exit(1)
-            completed_scripts += 1
+        for stage_key in stages_to_run:
+            if var_key == "heat_index" and stage_key in ("canopy", "export"):
+                print(f"\n[SKIP] Stage '{stage_key}' is shared/excluded for '{var_key}'.")
+                continue
+
+            stage = STAGES[stage_key]
+            print(f"\n=================================================================")
+            print(f"  {stage['title']} [{var_key}]")
+            print(f"=================================================================")
+
+            scripts = list(stage["scripts"])
+            if stage_key == "schools" and shared_schools_exist:
+                # Preserve existing school_locs.gpkg and only write variable-specific buffers & figures
+                scripts = [s for s in scripts if s.name != "process_schools.py"]
+
+            extra = ["--variable", var_key] if stage_key in VARIABLE_SUPPORTED_STAGES else []
+            total_scripts += len(scripts)
+
+            for script in scripts:
+                if not script.exists():
+                    print(f"Error: Script not found: {script}")
+                    sys.exit(1)
+                success = run_script(script, extra_args=extra)
+                if not success:
+                    print(f"\nPipeline halted due to error in {script.name} ({var_key})")
+                    sys.exit(1)
+                completed_scripts += 1
 
     total_time = time.time() - overall_start
     print("\n" + "=" * 65)

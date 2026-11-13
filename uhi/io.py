@@ -209,3 +209,51 @@ def load_uhi_rasters(
 
     return rasters
 
+
+def export_clipped_geotiff(
+    src_path: Union[str, Path],
+    dst_path: Union[str, Path],
+    boundary: Union[str, Path, object],
+) -> Path:
+    """Clip a source GeoTIFF to a polygon boundary and write a compressed Float32 GeoTIFF."""
+    import geopandas as gpd
+    from rasterio.mask import mask
+
+    src_p = Path(src_path)
+    dst_p = Path(dst_path)
+    if not src_p.is_file():
+        raise FileNotFoundError(f"Source raster not found: {src_p}")
+
+    gdf = gpd.read_file(boundary) if isinstance(boundary, (str, Path)) else boundary
+    with rasterio.open(src_p) as src:
+        if gdf.crs != src.crs:
+            gdf = gdf.to_crs(src.crs)
+        out_img, out_transform = mask(
+            src,
+            gdf.geometry,
+            crop=True,
+            filled=True,
+            nodata=np.nan,
+        )
+        band = out_img[0].astype(np.float32)
+        if src.nodata is not None and not np.isnan(src.nodata):
+            band[band == src.nodata] = np.nan
+        band[~np.isfinite(band)] = np.nan
+
+        meta = src.meta.copy()
+        meta.update({
+            "driver": "GTiff",
+            "height": band.shape[0],
+            "width": band.shape[1],
+            "transform": out_transform,
+            "dtype": "float32",
+            "nodata": np.nan,
+            "compress": "deflate",
+        })
+
+    dst_p.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(dst_p, "w", **meta) as dst:
+        dst.write(band, 1)
+    return dst_p
+
+

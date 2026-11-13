@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+import argparse
 import sys
 from pathlib import Path
 import contextily as cx
@@ -39,6 +40,8 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from uhi.variables import get_variable_spec
 
 # Design tokens from GEMINI.md
 SLIDE_FIGSIZE = (13.333, 7.5)
@@ -82,6 +85,11 @@ def c_to_f(c_val: float) -> float:
     return c_val * 9.0 / 5.0 + 32.0
 
 
+def f_to_c(f_val: float) -> float:
+    """Convert Fahrenheit to Celsius."""
+    return (f_val - 32.0) * 5.0 / 9.0
+
+
 def get_contrast_ylorrd_cmap():
     """Build a high-contrast YlOrRd colormap starting at amber gold to avoid pale yellow on white."""
     base_cmap = plt.get_cmap("YlOrRd")
@@ -89,18 +97,30 @@ def get_contrast_ylorrd_cmap():
     return mcolors.LinearSegmentedColormap.from_list("YlOrRd_contrast", colors)
 
 
-def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, output_dir: Path):
+def plot_measurement_map(
+    period: str,
+    input_dir: Path,
+    boundary_path: Path,
+    output_dir: Path,
+    variable: str = "temperature",
+):
+    var_spec = get_variable_spec(variable)
     meta = PERIOD_METADATA[period]
     csv_path = input_dir / meta["filename"]
 
-    print(f"\nProcessing {meta['name']} from {csv_path}...")
+    print(f"\nProcessing {meta['name']} ({var_spec.display_name}) from {csv_path}...")
     df = pd.read_csv(csv_path, low_memory=False)
-    temp_col = [c for c in df.columns if "Temp[" in c][0]
+    if var_spec.key == "heat_index":
+        val_col = "HeatIndex_F"
+        if val_col not in df.columns:
+            raise KeyError(f"Column '{val_col}' not found in {csv_path}")
+    else:
+        val_col = [c for c in df.columns if "Temp[" in c][0]
 
     # Filter valid finite points
-    valid_mask = df[temp_col].notna() & df["Lat"].notna() & df["Lon"].notna()
+    valid_mask = df[val_col].notna() & df["Lat"].notna() & df["Lon"].notna()
     valid_df = df[valid_mask].copy()
-    temps_c = valid_df[temp_col].values.astype(float)
+    vals = valid_df[val_col].values.astype(float)
 
     # Project coordinates to UTM Zone 18N (EPSG:32618)
     gdf = gpd.GeoDataFrame(
@@ -117,34 +137,58 @@ def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, outp
     map_ylim = (b_bounds[1] - pad, b_bounds[3] + pad)
 
     # Statistics
-    n_pts = len(temps_c)
-    t_min = float(np.min(temps_c))
-    t_max = float(np.max(temps_c))
-    t_mean = float(np.mean(temps_c))
-    p1 = float(np.percentile(temps_c, 1.0))
-    p99 = float(np.percentile(temps_c, 99.0))
+    n_pts = len(vals)
+    t_min = float(np.min(vals))
+    t_max = float(np.max(vals))
+    t_mean = float(np.mean(vals))
+    p1 = float(np.percentile(vals, 1.0))
+    p99 = float(np.percentile(vals, 99.0))
 
-    # Colormap and Normalization
+    # Colormap and Normalization stretched to 1st-99th percentiles of the active variable
     cmap = get_contrast_ylorrd_cmap()
     norm = mcolors.Normalize(vmin=p1, vmax=p99)
 
     # Sort points so extreme departures from the mean appear on top
-    mean_val = np.mean(temps_c)
-    draw_order = np.argsort(np.abs(temps_c - mean_val))
+    draw_order = np.argsort(np.abs(vals - t_mean))
     xs = gdf.geometry.x.values[draw_order]
     ys = gdf.geometry.y.values[draw_order]
-    c_vals = temps_c[draw_order]
+    c_vals = vals[draw_order]
 
     # =========================================================================
     # 1. Flagship 16:9 Presentation Figure (Clean Balanced Layout, No Card)
     # =========================================================================
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=DPI, facecolor="#FFFFFF")
 
+    if var_spec.key == "heat_index":
+        title_str = f"NOVA UHI Campaign — {meta['name']} Mobile Heat Index Measurements"
+        sub_str = (
+            f"Traverse Survey {meta['window']} • {n_pts:,} in-situ observations • "
+            f"Spatial Mean: {t_mean:.1f} °F ({f_to_c(t_mean):.1f} °C) • "
+            f"Range: {t_min:.1f} °F to {t_max:.1f} °F"
+        )
+        cbar_title = "Heat Index (°F)"
+        note_str = (
+            f"Notes: In-situ heat index observations (°F) recorded during mobile vehicle traverses on July 16, 2026. "
+            f"Color stretching: 1st–99th percentiles ({p1:.1f}°F to {p99:.1f}°F). Basemap: Esri World Light Gray Canvas."
+        )
+    else:
+        title_str = f"NOVA UHI Campaign — {meta['name']} Mobile Measurements"
+        sub_str = (
+            f"Traverse Survey {meta['window']} • {n_pts:,} in-situ observations • "
+            f"Spatial Mean: {t_mean:.1f} °C ({c_to_f(t_mean):.1f} °F) • "
+            f"Range: {t_min:.1f} °C to {t_max:.1f} °C ({c_to_f(t_min):.1f} °F to {c_to_f(t_max):.1f} °F)"
+        )
+        cbar_title = "Air Temperature (°C)"
+        note_str = (
+            f"Notes: In-situ ambient air temperature observations (°C) recorded during mobile vehicle traverses on July 16, 2026. "
+            f"Color stretching: 1st–99th percentiles ({p1:.1f}°C to {p99:.1f}°C). Basemap: Esri World Light Gray Canvas."
+        )
+
     # Titles (Left-aligned at 0.08)
     fig.text(
         0.080,
         0.945,
-        f"NOVA UHI Campaign — {meta['name']} Mobile Measurements",
+        title_str,
         ha="left",
         va="top",
         fontsize=17,
@@ -155,7 +199,7 @@ def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, outp
     fig.text(
         0.080,
         0.908,
-        f"Traverse Survey {meta['window']} • {n_pts:,} in-situ observations • Spatial Mean: {t_mean:.1f} °C ({c_to_f(t_mean):.1f} °F) • Range: {t_min:.1f} °C to {t_max:.1f} °C ({c_to_f(t_min):.1f} °F to {c_to_f(t_max):.1f} °F)",
+        sub_str,
         ha="left",
         va="top",
         fontsize=11.5,
@@ -189,7 +233,7 @@ def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, outp
     # Vertical Colorbar on the right with ample clearance
     cbar_ax = fig.add_axes([0.80, 0.16, 0.022, 0.62])
     cb = fig.colorbar(sc, cax=cbar_ax, orientation="vertical", extend="both")
-    cb.set_label("Air Temperature (°C)", fontsize=13, fontfamily=FONT_FAMILY, weight="bold", color=COLOR_TEXT_DARK, labelpad=14)
+    cb.set_label(cbar_title, fontsize=13, fontfamily=FONT_FAMILY, weight="bold", color=COLOR_TEXT_DARK, labelpad=14)
     cb.ax.tick_params(labelsize=10.5, colors=COLOR_TEXT_DARK, length=4, width=0.8)
     cb.outline.set_edgecolor("#9CA3AF")
     cb.outline.set_linewidth(0.8)
@@ -198,7 +242,7 @@ def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, outp
     fig.text(
         0.50,
         0.030,
-        f"Notes: In-situ ambient air temperature observations (°C) recorded during mobile vehicle traverses on July 16, 2026. Color stretching: 1st–99th percentiles ({p1:.1f}°C to {p99:.1f}°C). Basemap: Esri World Light Gray Canvas.",
+        note_str,
         ha="center",
         va="bottom",
         fontsize=10.5,
@@ -237,14 +281,26 @@ def plot_measurement_map(period: str, input_dir: Path, boundary_path: Path, outp
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Generate 16:9 mobile traverse observation maps for air temperature or heat index."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+
     base_dir = PROJECT_ROOT
     input_dir = base_dir / "input_data" / "uhi-combined"
     boundary_path = base_dir / "input_data" / "county_boundaries" / "novauhi_counties.gpkg"
-    output_dir = base_dir / "output" / "figures" / "measurements"
+    output_dir = base_dir / var_spec.figures_dir / "measurements"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for period in ["am", "af", "pm"]:
-        plot_measurement_map(period, input_dir, boundary_path, output_dir)
+        plot_measurement_map(period, input_dir, boundary_path, output_dir, variable=var_spec.key)
 
     print("\nAll measurement maps generated successfully!")
 

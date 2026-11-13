@@ -50,6 +50,7 @@ from uhi.analysis import (
     plot_grouped_boxplot,
     plot_single_boxplot,
 )
+from uhi.variables import get_variable_spec
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,46 +60,71 @@ logging.basicConfig(
 logger = logging.getLogger("analysis_plots")
 
 
-def generate_plots_for_metric(df, metric: str, out_dir: Path, dpi: int) -> list[Path]:
+def generate_plots_for_metric(
+    df,
+    metric: str,
+    out_dir: Path,
+    dpi: int,
+    variable: str = "temperature",
+) -> list[Path]:
     """Generate all scatter, bar, and box plots for a specific metric ('temperature' or 'anomaly')."""
+    var_spec = get_variable_spec(variable)
     is_anomaly = (metric == "anomaly")
-    prefix = "anom" if is_anomaly else "temp"
-    cols = [f"{prefix}_am", f"{prefix}_af", f"{prefix}_pm"]
+    col_prefix = "anom" if is_anomaly else "temp"
+    file_prefix = "anom" if is_anomaly else ("hi" if var_spec.key == "heat_index" else "temp")
+    cols = [f"{col_prefix}_am", f"{col_prefix}_af", f"{col_prefix}_pm"]
     generated: list[Path] = []
 
-    metric_title = "Temperature Anomaly" if is_anomaly else "Absolute Temperature"
+    metric_title = (
+        f"{var_spec.display_name} Anomaly"
+        if is_anomaly
+        else f"Absolute {var_spec.display_name}"
+    )
     logger.info("--- Generating figures for %s ---", metric_title)
 
     # 1. Scatter plots
     for col in cols:
-        fname = out_dir / f"scatter_canopy_{col}.png"
-        fig, _ = plot_scatter_canopy_temp(df, col, output_path=fname, dpi=dpi)
+        period = col.split("_")[-1]
+        fname = out_dir / f"scatter_canopy_{file_prefix}_{period}.png"
+        fig, _ = plot_scatter_canopy_temp(
+            df, col, output_path=fname, dpi=dpi, variable=var_spec.key
+        )
         plt.close(fig)
         generated.append(fname)
 
     # 2. Grouped bar chart
-    grouped_bar_file = out_dir / f"barchart_canopy_quintiles_{prefix}_grouped.png"
-    fig, _ = plot_grouped_barchart(df, cols=cols, output_path=grouped_bar_file, dpi=dpi)
+    grouped_bar_file = out_dir / f"barchart_canopy_quintiles_{file_prefix}_grouped.png"
+    fig, _ = plot_grouped_barchart(
+        df, cols=cols, output_path=grouped_bar_file, dpi=dpi, variable=var_spec.key
+    )
     plt.close(fig)
     generated.append(grouped_bar_file)
 
     # Individual bar charts
     for col in cols:
-        fname = out_dir / f"barchart_canopy_quintiles_{col}.png"
-        fig, _ = plot_single_barchart(df, col, output_path=fname, dpi=dpi)
+        period = col.split("_")[-1]
+        fname = out_dir / f"barchart_canopy_quintiles_{file_prefix}_{period}.png"
+        fig, _ = plot_single_barchart(
+            df, col, output_path=fname, dpi=dpi, variable=var_spec.key
+        )
         plt.close(fig)
         generated.append(fname)
 
     # 3. Grouped box plot
-    grouped_box_file = out_dir / f"boxplot_canopy_quintiles_{prefix}_grouped.png"
-    fig, _ = plot_grouped_boxplot(df, cols=cols, output_path=grouped_box_file, dpi=dpi)
+    grouped_box_file = out_dir / f"boxplot_canopy_quintiles_{file_prefix}_grouped.png"
+    fig, _ = plot_grouped_boxplot(
+        df, cols=cols, output_path=grouped_box_file, dpi=dpi, variable=var_spec.key
+    )
     plt.close(fig)
     generated.append(grouped_box_file)
 
     # Individual box plots
     for col in cols:
-        fname = out_dir / f"boxplot_canopy_quintiles_{col}.png"
-        fig, _ = plot_single_boxplot(df, col, output_path=fname, dpi=dpi)
+        period = col.split("_")[-1]
+        fname = out_dir / f"boxplot_canopy_quintiles_{file_prefix}_{period}.png"
+        fig, _ = plot_single_boxplot(
+            df, col, output_path=fname, dpi=dpi, variable=var_spec.key
+        )
         plt.close(fig)
         generated.append(fname)
 
@@ -107,20 +133,26 @@ def generate_plots_for_metric(df, metric: str, out_dir: Path, dpi: int) -> list[
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate canopy cover vs temperature/anomaly charts (scatter, bar, boxplot)."
+        description="Generate canopy cover vs temperature/heat index/anomaly charts (scatter, bar, boxplot)."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target thermal variable ('temperature' or 'heat_index').",
     )
     parser.add_argument(
         "--grid",
         type=Path,
-        default=Path("output/canopy/grid-canopy.gpkg"),
-        help="Path to grid GeoPackage with canopy and temperature data (default: output/canopy/grid-canopy.gpkg)",
+        default=None,
+        help="Path to grid GeoPackage with canopy and thermal data (default resolved from --variable)",
     )
     parser.add_argument(
         "--output-dir",
         "-o",
         type=Path,
-        default=Path("output/figures/analysis"),
-        help="Directory to save generated figures (default: output/figures/analysis)",
+        default=None,
+        help="Directory to save generated figures (default resolved from --variable)",
     )
     parser.add_argument(
         "--metric",
@@ -137,13 +169,15 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+    grid_path = args.grid if args.grid is not None else var_spec.grid_output_gpkg
+    out_dir = args.output_dir if args.output_dir is not None else (var_spec.figures_dir / "analysis")
 
     t0 = time.time()
-    logger.info("Loading analysis data from %s ...", args.grid)
-    df = load_analysis_dataframe(args.grid)
+    logger.info("Loading %s analysis data from %s ...", var_spec.display_name, grid_path)
+    df = load_analysis_dataframe(grid_path)
     logger.info("Loaded %d valid records inside study area.", len(df))
 
-    out_dir = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
 
@@ -152,13 +186,13 @@ def main() -> int:
     )
 
     for m in metrics_to_run:
-        figs = generate_plots_for_metric(df, m, out_dir, args.dpi)
+        figs = generate_plots_for_metric(df, m, out_dir, args.dpi, variable=var_spec.key)
         generated.extend(figs)
 
     total_time = time.time() - t0
 
     print("\n" + "=" * 70)
-    print("CANOPY VS. TEMPERATURE/ANOMALY ANALYSIS PLOTS GENERATED SUCCESSFULLY")
+    print(f"CANOPY VS. {var_spec.display_name.upper()}/ANOMALY ANALYSIS PLOTS GENERATED SUCCESSFULLY")
     print("=" * 70)
     print(f"Total processing time: {total_time:.2f} s")
     print(f"Generated {len(generated)} presentation figures (16:9 widescreen, {args.dpi} DPI):")

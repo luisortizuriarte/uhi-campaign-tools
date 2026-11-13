@@ -11,6 +11,7 @@ Northern Virginia (Alexandria, Arlington, and Fairfax):
 """
 
 import logging
+from math import ceil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import geopandas as gpd
@@ -20,6 +21,8 @@ import numpy as np
 import pandas as pd
 import rasterio
 import rasterio.mask
+
+from uhi.variables import get_variable_spec
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +101,11 @@ def compute_school_buffer_metrics(
     output_gpkg: Optional[Union[str, Path]] = DEFAULT_BUFFERS_GPKG,
     layer_name: str = "school_buffers",
     update_points_gpkg: Optional[Union[str, Path]] = DEFAULT_SCHOOL_LOCS,
+    domain_means: Optional[Dict[str, float]] = None,
 ) -> gpd.GeoDataFrame:
     """
     Generate 500-meter circular buffers around school locations and extract zonal
-    median air temperatures and tree canopy coverage.
+    median temperatures/heat index and tree canopy coverage.
 
     Parameters
     ----------
@@ -119,12 +123,15 @@ def compute_school_buffer_metrics(
         Layer name inside destination GeoPackage.
     update_points_gpkg : Optional[Union[str, Path]]
         If provided, updates the point GeoPackage with the newly calculated metrics.
+    domain_means : Optional[Dict[str, float]]
+        Optional baseline spatial means per period for anomaly computation.
 
     Returns
     -------
     gpd.GeoDataFrame
-        GeoDataFrame of buffered polygons with temperature and canopy metrics.
+        GeoDataFrame of buffered polygons with temperature/HI and canopy metrics.
     """
+    is_default_rasters = rasters is None or rasters == DEFAULT_RASTERS
     if rasters is None:
         rasters = DEFAULT_RASTERS
 
@@ -141,7 +148,7 @@ def compute_school_buffer_metrics(
     buffers_gdf = schools_pts.copy()
     buffers_gdf["geometry"] = schools_pts.geometry.buffer(buffer_distance)
 
-    # 1. Extract zonal median temperatures for each period
+    # 1. Extract zonal median values for each period
     for period in ["am", "af", "pm"]:
         r_path = Path(rasters.get(period, DEFAULT_RASTERS[period]))
         if not r_path.is_file():
@@ -150,20 +157,32 @@ def compute_school_buffer_metrics(
             buffers_gdf[f"anom_med_{period}"] = np.nan
             continue
 
-        logger.info("Extracting %s zonal median temperatures from %s ...", period.upper(), r_path.name)
+        logger.info("Extracting %s zonal medians from %s ...", period.upper(), r_path.name)
         meds = []
         with rasterio.open(r_path) as src:
+            raster_band = src.read(1).astype(np.float32)
+            if src.nodata is not None and not np.isnan(src.nodata):
+                raster_band[raster_band == src.nodata] = np.nan
+            raster_spatial_mean = float(np.nanmean(raster_band)) if np.isfinite(raster_band).any() else np.nan
             for geom in buffers_gdf.geometry:
                 try:
                     out_img, _ = rasterio.mask.mask(src, [geom], crop=True)
-                    vals = out_img[0][~np.isnan(out_img[0])]
+                    vals = out_img[0][np.isfinite(out_img[0])]
+                    if src.nodata is not None and not np.isnan(src.nodata):
+                        vals = vals[vals != src.nodata]
                     med = float(np.median(vals)) if len(vals) > 0 else np.nan
                 except Exception:
                     med = np.nan
                 meds.append(med)
 
         buffers_gdf[f"temp_med_{period}"] = meds
-        domain_mean = DOMAIN_MEANS.get(period, np.nanmean(meds))
+        if domain_means is not None and period in domain_means:
+            domain_mean = float(domain_means[period])
+        elif is_default_rasters:
+            domain_mean = DOMAIN_MEANS.get(period, raster_spatial_mean)
+        else:
+            domain_mean = raster_spatial_mean if np.isfinite(raster_spatial_mean) else float(np.nanmean(meds))
+
         buffers_gdf[f"anom_med_{period}"] = np.where(
             np.isfinite(meds),
             np.round(np.array(meds) - domain_mean, 2),
@@ -247,6 +266,7 @@ def plot_hottest_to_coldest_schools(
     output_path: Optional[Union[str, Path]] = None,
     n_top: int = 10,
     dpi: int = SLIDE_DPI,
+    variable: str = "temperature",
 ) -> plt.Figure:
     """
     Generate a 16:9 presentation chart ranking school buffers from hottest to coolest
@@ -255,7 +275,7 @@ def plot_hottest_to_coldest_schools(
     Parameters
     ----------
     df : gpd.GeoDataFrame
-        DataFrame with school attributes and temperature metrics.
+        DataFrame with school attributes and temperature/heat index metrics.
     period : str
         Collection period: 'am', 'af', or 'pm'.
     output_path : Optional[Union[str, Path]]
@@ -264,12 +284,15 @@ def plot_hottest_to_coldest_schools(
         Number of schools to display in the hottest and coolest ranking groups (default: 10).
     dpi : int
         Resolution in DPI (default: 300).
+    variable : str
+        Variable key ('temperature' or 'heat_index') for titles and labels.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     _configure_figtree()
+    var_spec = get_variable_spec(variable)
     period = period.lower()
     if period not in PERIOD_CONFIG:
         raise ValueError(f"Unknown period '{period}'. Expected 'am', 'af', or 'pm'.")
@@ -304,7 +327,9 @@ def plot_hottest_to_coldest_schools(
     y_hot = np.arange(n_top + gap, 2 * n_top + gap)
 
     bar_h = 0.65
-    x_min_baseline = cool_school[col] - 1.2
+    left_pad = max(1.2, delta_t * 0.15)
+    right_pad = max(1.8, delta_t * 0.25)
+    x_min_baseline = cool_school[col] - left_pad
 
     # Coolest bars
     bars_cool = ax_bars.barh(
@@ -336,10 +361,11 @@ def plot_hottest_to_coldest_schools(
     ax_bars.set_yticks(y_ticks)
     ax_bars.set_yticklabels(y_labels, fontsize=10.5, fontweight="medium", color="#1F2937", fontfamily=FONT_FAMILY)
 
+    val_label_offset = max(0.12, delta_t * 0.02)
     # Direct value annotations
     for bar, val in zip(bars_cool, coolest[col]):
         ax_bars.text(
-            val + 0.12,
+            val + val_label_offset,
             bar.get_y() + bar.get_height() / 2.0,
             f"{val:.2f}°F",
             ha="left",
@@ -352,7 +378,7 @@ def plot_hottest_to_coldest_schools(
 
     for bar, val in zip(bars_hot, hottest[col]):
         ax_bars.text(
-            val + 0.12,
+            val + val_label_offset,
             bar.get_y() + bar.get_height() / 2.0,
             f"{val:.2f}°F",
             ha="left",
@@ -373,6 +399,8 @@ def plot_hottest_to_coldest_schools(
         color=cfg["hot_color"],
         fontfamily=FONT_FAMILY,
         va="bottom",
+        bbox=dict(facecolor="#FFFFFF", edgecolor="none", pad=1.5),
+        zorder=3,
     )
     ax_bars.text(
         x_min_baseline,
@@ -383,13 +411,22 @@ def plot_hottest_to_coldest_schools(
         color=cfg["cool_color"],
         fontfamily=FONT_FAMILY,
         va="bottom",
+        bbox=dict(facecolor="#FFFFFF", edgecolor="none", pad=1.5),
+        zorder=3,
     )
 
-    ax_bars.set_xlim(x_min_baseline, hot_school[col] + 1.8)
+    ax_bars.set_xlim(x_min_baseline, hot_school[col] + right_pad)
     ax_bars.set_ylim(-1.0, 2 * n_top + gap + 1.2)
 
-    # Reference median line on bars
-    ax_bars.axvline(median_val, color="#BDC3C7", linestyle="--", linewidth=1.2, zorder=0)
+    # Reference median line on bars (stop neatly below the "Median:" label)
+    ax_bars.plot(
+        [median_val, median_val],
+        [-0.6, 2 * n_top + gap + 0.55],
+        color="#BDC3C7",
+        linestyle="--",
+        linewidth=1.2,
+        zorder=0,
+    )
     ax_bars.text(
         median_val,
         2 * n_top + gap + 0.8,
@@ -514,9 +551,10 @@ def plot_hottest_to_coldest_schools(
 
     ranks = np.arange(1, n_total + 1)
     sorted_temps = valid[col].values
+    dist_pad = max(0.5, delta_t * 0.08)
 
     ax_dist.plot(ranks, sorted_temps, color=cfg["theme_color"], linewidth=2.5, zorder=3)
-    ax_dist.fill_between(ranks, cool_school[col] - 0.5, sorted_temps, color=cfg["theme_color"], alpha=0.15, zorder=2)
+    ax_dist.fill_between(ranks, cool_school[col] - dist_pad, sorted_temps, color=cfg["theme_color"], alpha=0.15, zorder=2)
 
     mid_idx = n_total // 2
     ax_dist.scatter([1], [cool_school[col]], color=cfg["cool_color"], s=45, zorder=5)
@@ -531,16 +569,24 @@ def plot_hottest_to_coldest_schools(
         fontfamily=FONT_FAMILY,
         pad=8,
     )
-    ax_dist.set_xlabel("Coolest → Hottest Rank (1 to 261)", fontsize=10, color="#1F2937", fontfamily=FONT_FAMILY)
-    ax_dist.set_ylabel("Temp (°F)", fontsize=10, color="#1F2937", fontfamily=FONT_FAMILY)
+    ax_dist.set_xlabel(f"Coolest → Hottest Rank (1 to {n_total})", fontsize=10, color="#1F2937", fontfamily=FONT_FAMILY)
+    ax_dist.set_ylabel(f"{var_spec.abbr} ({var_spec.unit})", fontsize=10, color="#1F2937", fontfamily=FONT_FAMILY)
     ax_dist.tick_params(colors="#1F2937", labelsize=9.5)
-    ax_dist.set_ylim(cool_school[col] - 0.5, hot_school[col] + 0.5)
+    ax_dist.set_ylim(cool_school[col] - dist_pad, hot_school[col] + dist_pad)
+
+    period_word = {"am": "Morning", "af": "Afternoon", "pm": "Evening"}[period]
+    title_str = (
+        cfg["title"]
+        if var_spec.key == "temperature"
+        else f"{period_word} School {var_spec.short_name}: Hottest vs. Coolest 500m Buffers"
+    )
+    caption_metric = "air temperatures (°F)" if var_spec.key == "temperature" else "heat index values (°F)"
 
     # Overall Title
     fig.text(
         0.08,
         0.94,
-        cfg["title"],
+        title_str,
         ha="left",
         va="top",
         fontsize=16,
@@ -553,7 +599,7 @@ def plot_hottest_to_coldest_schools(
     fig.text(
         0.50,
         0.035,
-        "Zonal median air temperatures (°F) within 500-meter circular buffers around school centroids • Northern Virginia Heat Watch Campaign",
+        f"Zonal median {caption_metric} within 500-meter circular buffers around school centroids • Northern Virginia Heat Watch Campaign",
         ha="center",
         va="center",
         fontsize=10.5,
@@ -575,11 +621,12 @@ def plot_school_canopy_vs_anomaly(
     df: gpd.GeoDataFrame,
     output_path: Optional[Union[str, Path]] = None,
     dpi: int = SLIDE_DPI,
+    variable: str = "temperature",
 ) -> plt.Figure:
     """
     Generate a 16:9 presentation multi-series scatter plot summarizing the relationship
-    between school buffer temperature anomaly and tree canopy cover across Morning, Afternoon,
-    and Evening.
+    between school buffer temperature or heat index anomaly and tree canopy cover across
+    Morning, Afternoon, and Evening.
 
     Parameters
     ----------
@@ -589,12 +636,15 @@ def plot_school_canopy_vs_anomaly(
         File path to save the generated figure.
     dpi : int
         Resolution in DPI (default: 300).
+    variable : str
+        Variable key ('temperature' or 'heat_index') for titles and labels.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     _configure_figtree()
+    var_spec = get_variable_spec(variable)
 
     fig = plt.figure(figsize=SLIDE_FIGSIZE, dpi=dpi, facecolor="#FFFFFF")
 
@@ -701,7 +751,7 @@ def plot_school_canopy_vs_anomaly(
         fontfamily=FONT_FAMILY,
     )
     ax.set_ylabel(
-        "Temperature Anomaly (°F)",
+        f"{var_spec.short_name} Anomaly ({var_spec.unit})",
         fontsize=13,
         weight="bold",
         color="#1F2937",
@@ -710,7 +760,13 @@ def plot_school_canopy_vs_anomaly(
     )
     ax.tick_params(colors="#1F2937", labelsize=11)
     ax.set_xlim(10, 80)
-    ax.set_ylim(-3.8, 3.8)
+
+    anom_vals = np.concatenate(
+        [df[PERIOD_CONFIG[p]["anom_col"]].dropna().values for p in ["am", "af", "pm"]]
+    )
+    max_abs = float(np.max(np.abs(anom_vals))) if len(anom_vals) > 0 else 3.0
+    y_lim = max(3.8, ceil((max_abs + 0.6) * 2.0) / 2.0)
+    ax.set_ylim(-y_lim, y_lim)
 
     # Statistics callout cards in lower right
     stats_box_y = 0.28
@@ -735,7 +791,7 @@ def plot_school_canopy_vs_anomaly(
     fig.text(
         0.08,
         0.94,
-        "School Buffer Temperature Anomaly vs. Tree Canopy Cover",
+        f"School Buffer {var_spec.short_name} Anomaly vs. Tree Canopy Cover",
         ha="left",
         va="top",
         fontsize=16,
@@ -748,7 +804,7 @@ def plot_school_canopy_vs_anomaly(
     fig.text(
         0.50,
         0.035,
-        "Linear regression trendlines with 95% confidence intervals • Temperature anomaly relative to domain mean • Northern Virginia Heat Watch Campaign (N = 261 schools)",
+        f"Linear regression trendlines with 95% confidence intervals • {var_spec.short_name} anomaly relative to domain mean • Northern Virginia Heat Watch Campaign (N = {len(df)} schools)",
         ha="center",
         va="center",
         fontsize=10.5,

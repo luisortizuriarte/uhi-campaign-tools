@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+import argparse
 import sys
 from pathlib import Path
 import logging
@@ -48,6 +49,7 @@ import pyogrio
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from uhi.io import load_uhi_raster
 from uhi.plotting import compute_temperature_limits, compute_shared_anomaly_limit, TEMP_CMAP, ANOM_CMAP
+from uhi.variables import VariableSpec, get_variable_spec, resolve_clipped_rasters
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("export_transparent_maps")
@@ -56,10 +58,6 @@ logger = logging.getLogger("export_transparent_maps")
 INPUT_DIR = Path("input_data/maps")
 BOUNDARY_PATH = Path("input_data/county_boundaries/novauhi_counties.gpkg")
 CANOPY_GRID_PATH = Path("output/canopy/grid-canopy.gpkg")
-HOTSPOTS_GPKG_PATH = Path("output/hotspots/hotspots.gpkg")
-
-OUTPUT_BASE = Path("output/figures")
-CENTRAL_DIR = OUTPUT_BASE / "maps_transparent"
 
 # Color constants matching GEMINI.md
 COLOR_BORDER_CANOPY = "#4B5563"
@@ -83,33 +81,29 @@ CONF_COLORS = [
 ]
 
 
-def save_transparent(fig: plt.Figure, primary_path: Path, central_name: str) -> None:
+def save_transparent(fig: plt.Figure, primary_path: Path, central_dir: Path, central_name: str) -> None:
     """Save figure with transparent background at 300 DPI to primary and central directories."""
     primary_path.parent.mkdir(parents=True, exist_ok=True)
-    CENTRAL_DIR.mkdir(parents=True, exist_ok=True)
-    central_path = CENTRAL_DIR / central_name
+    central_dir.mkdir(parents=True, exist_ok=True)
+    central_path = central_dir / central_name
 
     fig.patch.set_alpha(0.0)
     fig.savefig(primary_path, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0.02)
     fig.savefig(central_path, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
-    logger.info("Saved transparent map: %s (and in %s)", primary_path.name, CENTRAL_DIR.name)
+    logger.info("Saved transparent map: %s (and in %s)", primary_path.name, central_dir.name)
 
 
-def export_temperature_and_anomaly_maps() -> None:
-    """Export single and 3-panel temperature and anomaly maps."""
-    logger.info("Exporting Temperature and Anomaly transparent maps...")
+def export_temperature_and_anomaly_maps(var_spec: VariableSpec, output_base: Path, central_dir: Path) -> None:
+    """Export single and 3-panel temperature/heat index and anomaly maps."""
+    logger.info("Exporting %s and Anomaly transparent maps...", var_spec.display_name)
     periods = ["am", "af", "pm"]
-    files = {
-        "am": Path("morning_clipped.tif"),
-        "af": Path("afternoon_clipped.tif"),
-        "pm": Path("evening_clipped.tif"),
-    }
+    files = resolve_clipped_rasters(var_spec, maps_dir=INPUT_DIR, boundary_path=BOUNDARY_PATH)
     rasters = {p: load_uhi_raster(files[p]) for p in periods}
     raster_list = [rasters[p] for p in periods]
     shared_anom_lim = compute_shared_anomaly_limit(raster_list)
 
-    # 1. Individual Temperature Maps
+    # 1. Individual Value Maps
     temp_cmap = plt.get_cmap(TEMP_CMAP).copy()
     temp_cmap.set_bad(color="none", alpha=0.0)
 
@@ -126,8 +120,9 @@ def export_temperature_and_anomaly_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-        out_path = OUTPUT_BASE / "temperature" / f"uhi_temperature_{p}_transparent.png"
-        save_transparent(fig, out_path, f"uhi_temperature_{p}_transparent.png")
+        fname = f"{var_spec.value_file_prefix}_{p}_transparent.png"
+        out_path = output_base / var_spec.value_subdir / fname
+        save_transparent(fig, out_path, central_dir, fname)
 
     # 2. Individual Anomaly Maps
     anom_cmap = plt.get_cmap(ANOM_CMAP).copy()
@@ -144,10 +139,11 @@ def export_temperature_and_anomaly_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-        out_path = OUTPUT_BASE / "anomaly" / f"uhi_anomaly_{p}_transparent.png"
-        save_transparent(fig, out_path, f"uhi_anomaly_{p}_transparent.png")
+        fname = f"{var_spec.anomaly_file_prefix}_{p}_transparent.png"
+        out_path = output_base / "anomaly" / fname
+        save_transparent(fig, out_path, central_dir, fname)
 
-    # 3. 3-Panel Temperature Map
+    # 3. 3-Panel Value Map
     fig, axes = plt.subplots(1, 3, figsize=(15, 6), facecolor="none", gridspec_kw={"wspace": 0.05})
     for ax, p in zip(axes, periods):
         r = rasters[p]
@@ -160,8 +156,9 @@ def export_temperature_and_anomaly_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-    out_panel_temp = OUTPUT_BASE / "panels" / "uhi_temperature_panel_transparent.png"
-    save_transparent(fig, out_panel_temp, "uhi_temperature_panel_transparent.png")
+    panel_fname = f"{var_spec.value_file_prefix}_panel_transparent.png"
+    out_panel_temp = output_base / "panels" / panel_fname
+    save_transparent(fig, out_panel_temp, central_dir, panel_fname)
 
     # 4. 3-Panel Anomaly Map
     fig, axes = plt.subplots(1, 3, figsize=(15, 6), facecolor="none", gridspec_kw={"wspace": 0.05})
@@ -174,11 +171,12 @@ def export_temperature_and_anomaly_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-    out_panel_anom = OUTPUT_BASE / "panels" / "uhi_anomaly_panel_transparent.png"
-    save_transparent(fig, out_panel_anom, "uhi_anomaly_panel_transparent.png")
+    anom_panel_fname = f"{var_spec.anomaly_file_prefix}_panel_transparent.png"
+    out_panel_anom = output_base / "panels" / anom_panel_fname
+    save_transparent(fig, out_panel_anom, central_dir, anom_panel_fname)
 
 
-def export_canopy_maps() -> None:
+def export_canopy_maps(output_base: Path, central_dir: Path) -> None:
     """Export continuous, discrete quintile, and overview canopy transparent maps."""
     logger.info("Exporting Tree Canopy transparent maps...")
     if not CANOPY_GRID_PATH.is_file():
@@ -216,8 +214,8 @@ def export_canopy_maps() -> None:
     ax.set_aspect("equal")
     ax.axis("off")
 
-    out_cont = OUTPUT_BASE / "canopy" / "map_tree_canopy_transparent.png"
-    save_transparent(fig, out_cont, "map_tree_canopy_transparent.png")
+    out_cont = output_base / "canopy" / "map_tree_canopy_transparent.png"
+    save_transparent(fig, out_cont, central_dir, "map_tree_canopy_transparent.png")
 
     # Also save canopy_overview_transparent.png in output/canopy/
     fig, ax = plt.subplots(figsize=(8, 8), facecolor="none")
@@ -230,8 +228,8 @@ def export_canopy_maps() -> None:
     ax.set_aspect("equal")
     ax.axis("off")
 
-    out_over = Path("output/canopy/canopy_overview_transparent.png")
-    save_transparent(fig, out_over, "canopy_overview_transparent.png")
+    out_over = output_base / "canopy" / "canopy_overview_transparent.png"
+    save_transparent(fig, out_over, central_dir, "canopy_overview_transparent.png")
 
     # 2. Discrete 5-tier Quintile Canopy Map
     tier_colors = [base_cmap(0.12), base_cmap(0.32), base_cmap(0.52), base_cmap(0.72), base_cmap(0.92)]
@@ -251,18 +249,19 @@ def export_canopy_maps() -> None:
     ax.set_aspect("equal")
     ax.axis("off")
 
-    out_disc = OUTPUT_BASE / "canopy" / "map_tree_canopy_discrete_transparent.png"
-    save_transparent(fig, out_disc, "map_tree_canopy_discrete_transparent.png")
+    out_disc = output_base / "canopy" / "map_tree_canopy_discrete_transparent.png"
+    save_transparent(fig, out_disc, central_dir, "map_tree_canopy_discrete_transparent.png")
 
 
-def export_hotspot_and_significance_maps() -> None:
+def export_hotspot_and_significance_maps(var_spec: VariableSpec, output_base: Path, central_dir: Path) -> None:
     """Export hotspot persistence, spots by period, confidence tiers, and continuous z-score maps."""
-    logger.info("Exporting Hotspot & Statistical Significance transparent maps...")
-    if not HOTSPOTS_GPKG_PATH.is_file():
-        logger.warning("Hotspots GeoPackage not found: %s", HOTSPOTS_GPKG_PATH)
+    hotspots_gpkg = var_spec.hotspots_dir / "hotspots.gpkg"
+    logger.info("Exporting Hotspot & Statistical Significance transparent maps (%s)...", var_spec.display_name)
+    if not hotspots_gpkg.is_file():
+        logger.warning("Hotspots GeoPackage not found: %s", hotspots_gpkg)
         return
 
-    df = pyogrio.read_dataframe(HOTSPOTS_GPKG_PATH, read_geometry=False)
+    df = pyogrio.read_dataframe(hotspots_gpkg, read_geometry=False)
     b_gdf = gpd.read_file(BOUNDARY_PATH) if BOUNDARY_PATH.is_file() else None
 
     ncols = int(df["col_index"].max() - df["col_index"].min() + 1)
@@ -298,8 +297,8 @@ def export_hotspot_and_significance_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-    out_spots_panel = OUTPUT_BASE / "hotspots" / "map_spots_by_period_transparent.png"
-    save_transparent(fig, out_spots_panel, "map_spots_by_period_transparent.png")
+    out_spots_panel = output_base / "hotspots" / "map_spots_by_period_transparent.png"
+    save_transparent(fig, out_spots_panel, central_dir, "map_spots_by_period_transparent.png")
 
     # Individual period spots
     for p in periods:
@@ -321,7 +320,7 @@ def export_hotspot_and_significance_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-        save_transparent(fig, OUTPUT_BASE / "hotspots" / f"map_spots_{p}_transparent.png", f"map_spots_{p}_transparent.png")
+        save_transparent(fig, output_base / "hotspots" / f"map_spots_{p}_transparent.png", central_dir, f"map_spots_{p}_transparent.png")
 
     # 2. Diurnal Persistence Map
     pers_palette = [
@@ -365,8 +364,8 @@ def export_hotspot_and_significance_maps() -> None:
     ax.set_aspect("equal")
     ax.axis("off")
 
-    out_pers = OUTPUT_BASE / "hotspots" / "map_persistence_transparent.png"
-    save_transparent(fig, out_pers, "map_persistence_transparent.png")
+    out_pers = output_base / "hotspots" / "map_persistence_transparent.png"
+    save_transparent(fig, out_pers, central_dir, "map_persistence_transparent.png")
 
     # 3. Statistical Significance Confidence Tiers (7-tier: 3-panel + individual)
     conf_cmap = ListedColormap(["none"] + CONF_COLORS)
@@ -415,8 +414,8 @@ def export_hotspot_and_significance_maps() -> None:
     ax.set_aspect("equal")
     ax.axis("off")
 
-    out_sig_af = OUTPUT_BASE / "hotspots" / "map_statistical_significance_af_transparent.png"
-    save_transparent(fig, out_sig_af, "map_statistical_significance_af_transparent.png")
+    out_sig_af = output_base / "hotspots" / "map_statistical_significance_af_transparent.png"
+    save_transparent(fig, out_sig_af, central_dir, "map_statistical_significance_af_transparent.png")
 
     # 3-Panel diurnal statistical significance map
     fig, axes = plt.subplots(1, 3, figsize=(15, 6), facecolor="none", gridspec_kw={"wspace": 0.05})
@@ -431,8 +430,8 @@ def export_hotspot_and_significance_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-    out_sig_diurnal = OUTPUT_BASE / "hotspots" / "map_statistical_significance_diurnal_transparent.png"
-    save_transparent(fig, out_sig_diurnal, "map_statistical_significance_diurnal_transparent.png")
+    out_sig_diurnal = output_base / "hotspots" / "map_statistical_significance_diurnal_transparent.png"
+    save_transparent(fig, out_sig_diurnal, central_dir, "map_statistical_significance_diurnal_transparent.png")
 
     # Also individual AM and PM statistical significance
     for p in ["am", "pm"]:
@@ -447,12 +446,15 @@ def export_hotspot_and_significance_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-        save_transparent(fig, OUTPUT_BASE / "hotspots" / f"map_statistical_significance_{p}_transparent.png", f"map_statistical_significance_{p}_transparent.png")
+        save_transparent(fig, output_base / "hotspots" / f"map_statistical_significance_{p}_transparent.png", central_dir, f"map_statistical_significance_{p}_transparent.png")
 
-    # 4. Continuous Getis-Ord Gi* z-score Intensity Map (RdBu_r, limits +/- 8.0)
+    # 4. Continuous Getis-Ord Gi* z-score Intensity Map (RdBu_r, adaptive limits >= +/- 8.0)
     z_cmap = plt.get_cmap("RdBu_r").copy()
     z_cmap.set_bad(color="none", alpha=0.0)
-    z_norm = TwoSlopeNorm(vmin=-8.0, vcenter=0.0, vmax=8.0)
+    z_all = np.concatenate([df.loc[inside, f"gi_z_{p}"].dropna().values for p in periods])
+    z_p_ext = max(abs(float(np.percentile(z_all, 0.5))), abs(float(np.percentile(z_all, 99.5)))) if len(z_all) > 0 else 8.0
+    z_lim = 8.0 if z_p_ext <= 8.5 else float(np.ceil(z_p_ext / 2.0) * 2.0)
+    z_norm = TwoSlopeNorm(vmin=-z_lim, vcenter=0.0, vmax=z_lim)
 
     for p in periods:
         z_raw = df[f"gi_z_{p}"].values
@@ -469,17 +471,32 @@ def export_hotspot_and_significance_maps() -> None:
         ax.set_aspect("equal")
         ax.axis("off")
 
-        save_transparent(fig, OUTPUT_BASE / "hotspots" / f"map_zscore_intensity_{p}_transparent.png", f"map_zscore_intensity_{p}_transparent.png")
+        save_transparent(fig, output_base / "hotspots" / f"map_zscore_intensity_{p}_transparent.png", central_dir, f"map_zscore_intensity_{p}_transparent.png")
 
 
 def main() -> int:
-    logger.info("Starting batch generation of map-only transparent PNGs...")
-    export_temperature_and_anomaly_maps()
-    export_canopy_maps()
-    export_hotspot_and_significance_maps()
+    parser = argparse.ArgumentParser(
+        description="Batch generate map-only transparent PNGs at 300 DPI."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
+    output_base = var_spec.figures_dir
+    central_dir = output_base / "maps_transparent"
+
+    logger.info("Starting batch generation of map-only transparent PNGs (%s)...", var_spec.display_name)
+    export_temperature_and_anomaly_maps(var_spec, output_base, central_dir)
+    if var_spec.key == "temperature":
+        export_canopy_maps(output_base, central_dir)
+    export_hotspot_and_significance_maps(var_spec, output_base, central_dir)
 
     # Summary
-    central_files = list(CENTRAL_DIR.glob("*.png"))
+    central_files = list(central_dir.glob("*.png"))
     print("\n" + "=" * 70)
     print(f"SUCCESS: Generated {len(central_files)} transparent map-only figures at 300 DPI:")
     print("=" * 70)

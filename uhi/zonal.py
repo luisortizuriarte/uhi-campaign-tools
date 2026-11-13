@@ -25,24 +25,33 @@ TEMPERATURE_PERIODS: List[Tuple[str, str, str]] = [
     ("pm", "temp_pm", "predicted_temperature_surface_pm-whole.tif"),
 ]
 
+HEAT_INDEX_PERIODS: List[Tuple[str, str, str]] = [
+    ("am", "temp_am", "full-am-hi.tif"),
+    ("af", "temp_af", "full-af-hi.tif"),
+    ("pm", "temp_pm", "full-pm-hi.tif"),
+]
+
 
 def compute_temperature_zonal_means(
     grid_gdf: gpd.GeoDataFrame,
     maps_dir: Union[str, Path] = "input_data/maps",
     spec: Optional[GridSpec] = None,
+    periods_spec: Optional[List[Tuple[str, str, str]]] = None,
 ) -> gpd.GeoDataFrame:
     """
-    Compute the zonal mean temperature for each grid cell across morning (AM),
-    afternoon (AF), and evening (PM) rasters.
+    Compute the zonal mean temperature or heat index for each grid cell across
+    morning (AM), afternoon (AF), and evening (PM) rasters.
 
     Parameters
     ----------
     grid_gdf : gpd.GeoDataFrame
         Grid GeoDataFrame with row_index and col_index attributes.
     maps_dir : str or Path
-        Directory containing the predicted temperature surface GeoTIFFs.
+        Directory containing the predicted surface GeoTIFFs.
     spec : GridSpec, optional
         Precomputed GridSpec. If None, derived automatically from grid_gdf.
+    periods_spec : list of (period, col_name, filename), optional
+        Explicit period/column/filename tuples (defaults to TEMPERATURE_PERIODS).
 
     Returns
     -------
@@ -56,6 +65,9 @@ def compute_temperature_zonal_means(
     if spec is None:
         spec = GridSpec.from_grid(grid_gdf)
 
+    if periods_spec is None:
+        periods_spec = TEMPERATURE_PERIODS
+
     dst_transform = from_origin(spec.x0, spec.y0, spec.cell_size, spec.cell_size)
     dst_crs = f"EPSG:{spec.crs_epsg}"
 
@@ -64,7 +76,7 @@ def compute_temperature_zonal_means(
 
     out_gdf = grid_gdf.copy()
 
-    for period, col_name, filename in TEMPERATURE_PERIODS:
+    for period, col_name, filename in periods_spec:
         tif_path = maps_path / filename
         if not tif_path.is_file():
             # Try finding any file matching period in filename

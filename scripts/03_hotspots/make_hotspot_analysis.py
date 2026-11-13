@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+import argparse
 from pathlib import Path
 import logging
 import sys
@@ -38,6 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geopandas as gpd
 import pandas as pd
 import pyogrio
+
+from uhi.variables import get_variable_spec
 
 from uhi.hotspots import (
     analyze_hotspots,
@@ -65,13 +68,25 @@ logger = logging.getLogger("hotspot_pipeline")
 
 
 def main() -> int:
-    t_start = time.time()
-    logger.info("Starting NOVA Hot & Cold Spot Analysis Pipeline...")
+    parser = argparse.ArgumentParser(
+        description="Run Getis-Ord Gi* hot/cold spot clustering and generate hotspot figures."
+    )
+    parser.add_argument(
+        "--variable",
+        choices=["temperature", "heat_index"],
+        default="temperature",
+        help="Target climatic variable (default: temperature)",
+    )
+    args = parser.parse_args()
+    var_spec = get_variable_spec(args.variable)
 
-    grid_path = Path("output/canopy/grid-canopy.gpkg")
+    t_start = time.time()
+    logger.info("Starting NOVA %s Hot & Cold Spot Analysis Pipeline...", var_spec.display_name)
+
+    grid_path = var_spec.grid_output_gpkg
     boundary_path = Path("input_data/county_boundaries/novauhi_counties.gpkg")
-    out_data_dir = Path("output/hotspots")
-    out_fig_dir = Path("output/figures/hotspots")
+    out_data_dir = var_spec.hotspots_dir
+    out_fig_dir = var_spec.figures_dir / "hotspots"
 
     out_data_dir.mkdir(parents=True, exist_ok=True)
     out_fig_dir.mkdir(parents=True, exist_ok=True)
@@ -122,35 +137,35 @@ def main() -> int:
 
     # Figure 1: 3-panel map of hot/cold spots per period
     fig1_path = out_fig_dir / "map_spots_by_period.png"
-    plot_map_spots_by_period(enriched, boundary_path=boundary_path, output_path=fig1_path)
+    plot_map_spots_by_period(enriched, boundary_path=boundary_path, output_path=fig1_path, variable=var_spec.key)
 
     # Figure 2: Diurnal persistence map
     fig2_path = out_fig_dir / "map_persistence.png"
-    plot_map_persistence(enriched, boundary_path=boundary_path, output_path=fig2_path)
+    plot_map_persistence(enriched, boundary_path=boundary_path, output_path=fig2_path, variable=var_spec.key)
 
     # Figure 3: Grouped bar chart of spot area by period
     fig3_path = out_fig_dir / "barchart_spot_area_by_period.png"
-    plot_barchart_spot_area_by_period(period_summary, output_path=fig3_path)
+    plot_barchart_spot_area_by_period(period_summary, output_path=fig3_path, variable=var_spec.key)
 
     # Figure 4: Persistence tier bar chart
     fig4_path = out_fig_dir / "barchart_persistence.png"
-    plot_barchart_persistence(persistence_summary, output_path=fig4_path)
+    plot_barchart_persistence(persistence_summary, output_path=fig4_path, variable=var_spec.key)
 
     # Figure 5: Boxplot of canopy cover: Hot All-3 vs Cold All-3
     fig5_path = out_fig_dir / "boxplot_canopy_hot_vs_cold.png"
-    plot_boxplot_canopy_hot_vs_cold(enriched, output_path=fig5_path)
+    plot_boxplot_canopy_hot_vs_cold(enriched, output_path=fig5_path, variable=var_spec.key)
 
     # Figure 6: Grouped bar chart of canopy by spot class per period
     fig6_path = out_fig_dir / "barchart_canopy_by_spot.png"
-    plot_barchart_canopy_by_spot(period_summary, output_path=fig6_path)
+    plot_barchart_canopy_by_spot(period_summary, output_path=fig6_path, variable=var_spec.key)
 
     # Figure 7: Sensitivity check (Gi* vs Percentile agreement)
     fig7_path = out_fig_dir / "barchart_method_agreement.png"
-    plot_barchart_method_agreement(sensitivity_summary, output_path=fig7_path)
+    plot_barchart_method_agreement(sensitivity_summary, output_path=fig7_path, variable=var_spec.key)
 
     # 6. Print summary report to stdout
     print("\n" + "=" * 78)
-    print("NORTHERN VIRGINIA URBAN HEAT ISLAND — HOT & COLD SPOT ANALYSIS SUMMARY")
+    print(f"NORTHERN VIRGINIA UHI ({var_spec.display_name.upper()}) — HOT & COLD SPOT ANALYSIS SUMMARY")
     print("=" * 78)
     print("\n1. DIURNAL HOT & COLD SPOTS BY COLLECTION TIME:")
     print(period_summary[["period_label", "spot_class", "area_pct", "area_km2", "mean_temp_f", "mean_canopy_pct"]].to_string(index=False))
